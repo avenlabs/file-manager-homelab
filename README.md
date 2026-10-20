@@ -2,52 +2,81 @@
 
 File manager mobile (iPhone & Android) untuk upload, melihat, dan mengelola foto/video/file di storage homelab CasaOS.
 
+![Screenshot](docs/screenshots/overview.png)
+
 ```
-┌──────────────┐   HTTPS/HTTP (LAN / Tailscale)   ┌──────────── CasaOS ────────────┐
+┌──────────────┐   HTTP/HTTPS (LAN / Tailscale)   ┌──────────── CasaOS ────────────┐
 │  App Expo    │ ───────────────────────────────▶ │ casa-files-server (Docker, Go) │
 │ iOS/Android  │   REST + token                   │   /data  ⇢  disk 1.5TB         │
 └──────────────┘                                  └────────────────────────────────┘
 ```
 
-- `server/` — API Go (stdlib saja, tanpa dependency), jalan sebagai container di CasaOS.
-- `app/` — aplikasi Expo SDK 58 (React Native + TypeScript).
+| Folder | Isi | Dijalankan di |
+|---|---|---|
+| `server/` | API Go (stdlib, tanpa dependency) + Dockerfile | Server CasaOS |
+| `app/` | Aplikasi Expo SDK 58 (React Native + TypeScript) | Laptop (development/build), lalu di-install ke HP |
 
 ## Fitur
 
-- Browse folder, breadcrumb, pull-to-refresh, info kapasitas disk
-- Upload multi foto & video dari galeri (file asli HEIC/HEVC, tanpa kompresi), kamera, atau file apa pun
-- Antrian upload (2 paralel), progress, cancel, tetap jalan saat app di-minimize (background session)
+- Browse folder (list / grid), info kapasitas disk, pull-to-refresh
+- Upload multi foto & video dari galeri (file asli HEIC/HEVC), kamera, atau file apa pun
+- Antrian upload (2 paralel), progress, cancel, tetap jalan saat app di-minimize
 - Upload di-stream ke disk → video ukuran GB aman; nama bentrok otomatis jadi `foto (1).jpg`
 - Preview gambar & streaming video (HTTP Range), share / simpan ke Photos
 - Folder baru, rename, hapus
-- Auth password → token HMAC (default 30 hari), proteksi path traversal & symlink escape
+- Login password → token HMAC (default 30 hari), proteksi path traversal & symlink escape
+- Mode terang/gelap otomatis
 
-## 1. Deploy server di CasaOS
+---
 
-1. Cek lokasi disk 1.5TB kamu di CasaOS (Storage Manager), mis. `/DATA` atau `/media/HDD1`.
-2. Copy folder `server/` ke CasaOS (scp / Samba), lalu via SSH:
+## 1. Jalankan server di CasaOS
 
-   ```bash
-   cd server
-   # edit docker-compose.yml: APP_PASSWORD, TOKEN_SECRET (openssl rand -hex 32), dan path volume
-   docker compose up -d --build
-   curl http://localhost:8088/api/health   # {"status":"ok"}
-   ```
+Yang dibutuhkan: akses SSH ke server CasaOS (Docker sudah terpasang bawaan CasaOS).
 
-   Container akan muncul di dashboard CasaOS. (Alternatif: build & push image ke Docker Hub/GHCR,
-   lalu pakai **App Store → Custom Install → Import** dengan compose yang menunjuk ke image tersebut.)
+```bash
+# 1. Clone repo di server
+git clone https://github.com/avenlabs/file-manager-homelab.git
+cd file-manager-homelab/server
 
-3. Volume `- /path/disk/kamu:/data` menentukan folder mana yang bisa diakses app. Semua di luar `/data` tidak bisa disentuh.
+# 2. Buat konfigurasi
+cp .env.example .env
+openssl rand -hex 32          # salin hasilnya ke TOKEN_SECRET
+nano .env                     # isi APP_PASSWORD, TOKEN_SECRET, STORAGE_PATH
+
+# 3. Build & jalankan
+docker compose up -d --build
+
+# 4. Cek
+curl http://localhost:8088/api/health      # → {"status":"ok"}
+docker compose logs -f                     # lihat log (Ctrl+C untuk keluar)
+```
+
+**`STORAGE_PATH`** adalah folder di server yang akan bisa diakses app. Cek lokasi disk 1.5TB kamu
+di dashboard CasaOS → Storage (biasanya `/DATA/...` atau `/media/<nama-disk>`). Folder lain di luar itu
+tidak bisa disentuh app.
+
+Container otomatis jalan lagi setelah server reboot (`restart: unless-stopped`) dan muncul di dashboard CasaOS.
+
+**Update ke versi terbaru:**
+
+```bash
+cd file-manager-homelab && git pull
+cd server && docker compose up -d --build
+```
 
 ### Akses dari luar rumah (disarankan: Tailscale)
 
-Jangan expose port 8088 langsung ke internet. Pilihan:
+Jangan buka port 8088 langsung ke internet. Pilihan:
 
-- **Tailscale** (ada di App Store CasaOS): install di CasaOS + iPhone/Android, lalu akses `http://<ip-tailscale>:8088`.
+- **Tailscale** (ada di App Store CasaOS): install di CasaOS + di HP, lalu di app isi alamat `<ip-tailscale>:8088`.
   Untuk HTTPS: `tailscale serve --bg 8088` → `https://<nama-mesin>.<tailnet>.ts.net`.
-- **Cloudflare Tunnel**: dapat domain HTTPS publik. Perhatikan limit body upload 100MB di plan gratis — kurang cocok untuk video besar.
+- **Cloudflare Tunnel**: dapat domain HTTPS publik, tapi plan gratis membatasi upload maks 100MB per request — kurang cocok untuk video besar.
 
-## 2. Menjalankan app (development)
+---
+
+## 2. Jalankan app (di laptop, untuk development)
+
+Yang dibutuhkan: Node.js 20+ dan HP yang satu jaringan Wi-Fi dengan laptop.
 
 ```bash
 cd app
@@ -55,20 +84,39 @@ npm install
 npx expo start
 ```
 
-Karena app memakai modul native (video, background upload, secure store), gunakan **development build**, bukan Expo Go:
+Lalu scan QR code yang muncul:
 
-```bash
-npm i -g eas-cli && eas login
-eas build -p android --profile development   # atau -p ios
-```
+- **Cara cepat:** install **Expo Go** dari App Store / Play Store, lalu scan QR (iPhone: pakai app Camera).
+  Semua modul yang dipakai tersedia di Expo Go, jadi cocok untuk mencoba UI & fitur dasar.
+- **Cara yang disarankan (development build):** perilakunya sama persis dengan app final
+  (izin, akses HTTP ke LAN, upload background).
 
-## 3. Install ke HP
+  ```bash
+  npm i -g eas-cli
+  eas login                                    # akun Expo gratis
+  eas build -p android --profile development   # atau -p ios
+  ```
 
-| Platform | Cara | Biaya |
-|---|---|---|
-| Android | `npm run build:android` → hasil `.apk`, download & install langsung (izinkan "unknown sources") | Gratis |
-| iPhone (opsi A) | Apple Developer Program → `npm run build:ios` (ad hoc, daftarkan UDID via `eas device:create`) atau TestFlight lewat `eas submit` | $99/tahun |
-| iPhone (opsi B) | Mac + Xcode + Apple ID gratis: `npx expo run:ios --device` | Gratis, tapi app expired tiap 7 hari |
+  Install hasil build ke HP, lalu `npx expo start` dan buka dari app tersebut.
+
+Di layar login isi alamat server, mis. `192.168.1.10:8088`, dan `APP_PASSWORD` dari file `.env`.
+
+Cek kode: `npm run typecheck`.
+
+---
+
+## 3. Build & install ke HP (app final)
+
+| Platform | Perintah | Hasil | Biaya |
+|---|---|---|---|
+| Android | `npm run build:android` | File `.apk` → download di HP & install (izinkan "Install unknown apps") | Gratis |
+| iPhone | `eas device:create` (daftarkan iPhone), lalu `npm run build:ios` | Link install ad hoc | Apple Developer $99/tahun |
+| iPhone via TestFlight | `eas build -p ios --profile production` lalu `eas submit -p ios` | Install lewat app TestFlight | Apple Developer $99/tahun |
+| iPhone tanpa akun berbayar | Mac + Xcode: `npx expo run:ios --device` | Langsung ke iPhone via kabel | Gratis, tapi expired tiap 7 hari |
+
+Build berjalan di cloud Expo (EAS), jadi tidak perlu Mac/Android Studio kecuali opsi terakhir.
+
+---
 
 ## API server
 
@@ -88,9 +136,20 @@ Semua endpoint (kecuali health & login) butuh `Authorization: Bearer <token>` at
 
 Env server: `APP_PASSWORD` (wajib), `TOKEN_SECRET`, `TOKEN_TTL_HOURS` (720), `STORAGE_ROOT` (`/data`), `PORT` (8088).
 
+Menjalankan server tanpa Docker (development): `cd server && APP_PASSWORD=test STORAGE_ROOT=./data go run .`
+
+## Troubleshooting
+
+| Masalah | Solusi |
+|---|---|
+| App: "Network request failed" | Pastikan HP satu jaringan / Tailscale aktif, dan `curl http://<ip-server>:8088/api/health` dari laptop berhasil |
+| Upload gagal "permission denied" | Folder `STORAGE_PATH` harus bisa ditulis oleh container |
+| Harus login ulang setelah restart server | Isi `TOKEN_SECRET` di `.env` (tanpa itu token di-generate acak tiap start) |
+| Port 8088 bentrok | Ganti `PORT` di `.env`, lalu `docker compose up -d` |
+
 ## Ide pengembangan berikutnya
 
-- Thumbnail di sisi server (saat ini thumbnail list memuat gambar asli, di-cache di HP)
+- Thumbnail di sisi server (saat ini thumbnail memuat gambar asli, lalu di-cache di HP)
 - Auto-backup galeri (seperti Google Photos) dengan `expo-media-library` + `expo-background-task`
 - Upload resumable/chunked (tus) untuk koneksi tidak stabil
 - Multi-user
