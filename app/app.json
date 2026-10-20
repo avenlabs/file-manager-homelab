@@ -1,0 +1,58 @@
+{
+  "expo": {
+    "name": "Casa Files",
+    "slug": "casa-files",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.joywibowo.casafiles",
+      "infoPlist": {
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": true,
+          "NSAllowsLocalNetworking": true
+        },
+        "NSLocalNetworkUsageDescription": "Casa Files terhubung ke server CasaOS di jaringan lokal kamu.",
+        "UIBackgroundModes": [
+          "fetch"
+        ]
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false,
+      "package": "com.joywibowo.casafiles"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "scheme": "casafiles",
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Izinkan Casa Files memilih foto & video untuk di-upload ke CasaOS.",
+          "cameraPermission": "Izinkan Casa Files memakai kamera untuk mengambil foto lalu upload.",
+          "microphonePermission": "Izinkan Casa Files merekam audio saat merekam video."
+        }
+      ],
+      "expo-secure-store",
+      "expo-video",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true
+          }
+        }
+      ]
+    ]
+  }
+}

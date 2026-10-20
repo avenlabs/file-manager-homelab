@@ -1,0 +1,26 @@
+# Import di CasaOS: App Store > Custom Install > Import (tempel isi file ini),
+# atau via SSH: docker compose up -d --build
+name: casa-files
+services:
+  casa-files:
+    build: .
+    image: casa-files-server:latest
+    container_name: casa-files
+    restart: unless-stopped
+    ports:
+      - "8088:8088"
+    environment:
+      APP_PASSWORD: "ganti-password-kuat"
+      TOKEN_SECRET: "ganti-dengan-string-acak-panjang"   # openssl rand -hex 32
+      TOKEN_TTL_HOURS: "720"
+      TZ: Asia/Jakarta
+    volumes:
+      # Sesuaikan dengan lokasi storage 1.5TB kamu di CasaOS (cek di Files / Storage Manager)
+      - /DATA/AppData/casa-files/storage:/data
+x-casaos:
+  architectures: [amd64, arm64]
+  main: casa-files
+  title:
+    en_us: Casa Files
+  category: Utilities
+  port_map: "8088"
