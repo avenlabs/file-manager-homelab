@@ -29,14 +29,55 @@ esac
 
 # ---------- binary ----------
 TMP="$(mktemp)"
-trap 'rm -f "$TMP"' EXIT
+WORK=""
+trap 'rm -f "$TMP"; [ -n "$WORK" ] && rm -rf "$WORK"' EXIT
+
+GO_VERSION="1.24.7"
+BRANCH="${BRANCH:-main}"
+
+# go_ok <path-go>: true jika versi Go >= 1.22
+go_ok() {
+  local v
+  v="$("$1" env GOVERSION 2>/dev/null)" || return 1 # contoh: go1.24.7
+  v="${v#go}"
+  [ "${v%%.*}" -gt 1 ] || { [ "${v%%.*}" -eq 1 ] && [ "$(echo "$v" | cut -d. -f2)" -ge 22 ]; }
+}
+
+# Build dari source langsung di mesin ini (dipakai jika belum ada GitHub Release).
+build_from_source() {
+  say "Build dari source (beberapa menit)..."
+  WORK="$(mktemp -d /var/tmp/casa-files-build.XXXXXX)"
+  curl -fsSL "https://codeload.github.com/$REPO/tar.gz/refs/heads/$BRANCH" |
+    tar -xz -C "$WORK" --strip-components=1 || die "gagal download source code"
+
+  local go_bin=""
+  if command -v go >/dev/null && go_ok "$(command -v go)"; then
+    go_bin="$(command -v go)"
+  else
+    local dl_arch=$ARCH
+    [ "$ARCH" = armv7 ] && dl_arch=armv6l
+    say "Download Go $GO_VERSION (sementara, dihapus setelah build)"
+    curl -fL# "https://go.dev/dl/go${GO_VERSION}.linux-${dl_arch}.tar.gz" |
+      tar -xz -C "$WORK" || die "gagal download Go"
+    go_bin="$WORK/go/bin/go"
+  fi
+
+  say "Compile dengan $("$go_bin" version | awk '{print $3}')"
+  (cd "$WORK/server" &&
+    CGO_ENABLED=0 GOTOOLCHAIN=local GOCACHE="$WORK/cache" GOPATH="$WORK/gopath" \
+      "$go_bin" build -trimpath -ldflags="-s -w" -o "$TMP" .) || die "build gagal"
+}
+
 if [ -n "${1:-}" ]; then
   say "Memakai binary lokal: $1"
   cp "$1" "$TMP"
 else
   URL="https://github.com/$REPO/releases/latest/download/casa-files-server-linux-$ARCH"
   say "Download $URL"
-  curl -fL --retry 3 -o "$TMP" "$URL" || die "gagal download binary. Pastikan sudah ada release di https://github.com/$REPO/releases"
+  if ! curl -fsL --retry 2 -o "$TMP" "$URL"; then
+    say "Binary siap pakai belum tersedia di GitHub Releases."
+    build_from_source
+  fi
 fi
 # Pastikan yang terdownload benar-benar program (ELF), bukan halaman HTML.
 [ "$(head -c 4 "$TMP" | od -An -c | tr -d ' ')" = '177ELF' ] || die "file bukan binary Linux (ELF)"
