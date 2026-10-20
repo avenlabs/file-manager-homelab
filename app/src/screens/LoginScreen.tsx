@@ -1,17 +1,12 @@
 import { useState } from 'react';
-import {
-  ActivityIndicator,
-  KeyboardAvoidingView,
-  Platform,
-  Pressable,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import { KeyboardAvoidingView, Platform, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { LinearGradient } from 'expo-linear-gradient';
+import { ArrowRight, CircleAlert, HardDrive, Lock, Server } from 'lucide-react-native';
 import { login, normalizeBaseUrl, type Session } from '../api';
-import { useTheme } from '../theme';
+import { radius, useTheme } from '../theme';
+import { Button, Input, Txt } from '../components/ui';
+import GridBackdrop from '../components/GridBackdrop';
 
 export default function LoginScreen({ onLogin }: { onLogin: (s: Session) => void }) {
   const t = useTheme();
@@ -32,61 +27,86 @@ export default function LoginScreen({ onLogin }: { onLogin: (s: Session) => void
     }
   };
 
-  const input = [styles.input, { backgroundColor: t.card, color: t.text, borderColor: t.border }];
-
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: t.bg }}>
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        style={styles.container}
-      >
-        <Text style={[styles.title, { color: t.text }]}>Casa Files</Text>
-        <Text style={{ color: t.muted, marginBottom: 24 }}>
-          Hubungkan ke server casa-files di CasaOS kamu.
-        </Text>
+    <View style={{ flex: 1, backgroundColor: t.bg }}>
+      <GridBackdrop />
+      <SafeAreaView style={{ flex: 1 }}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.container}>
+          <View style={{ flex: 1, justifyContent: 'center' }}>
+            {/* Logo: kotak ikon dengan border gradient */}
+            <LinearGradient colors={t.gradient} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.logoRing}>
+              <View style={[styles.logo, { backgroundColor: t.bg }]}>
+                <HardDrive size={22} color={t.text} strokeWidth={1.6} />
+              </View>
+            </LinearGradient>
 
-        <Text style={[styles.label, { color: t.muted }]}>Alamat server</Text>
-        <TextInput
-          style={input}
-          placeholder="192.168.1.10:8088 atau https://casaos.tailnet.ts.net"
-          placeholderTextColor={t.muted}
-          autoCapitalize="none"
-          autoCorrect={false}
-          keyboardType="url"
-          value={url}
-          onChangeText={setUrl}
-        />
+            <Txt variant="caption" style={{ marginTop: 28 }}>
+              Self-hosted · CasaOS
+            </Txt>
+            <Txt variant="title" style={{ fontSize: 34, marginTop: 6 }}>
+              Casa Files
+            </Txt>
+            <Txt variant="muted" style={{ marginTop: 6, lineHeight: 20 }}>
+              File pribadimu, di server sendiri.{'\n'}Masuk untuk terhubung ke homelab.
+            </Txt>
 
-        <Text style={[styles.label, { color: t.muted }]}>Password</Text>
-        <TextInput
-          style={input}
-          placeholder="APP_PASSWORD"
-          placeholderTextColor={t.muted}
-          secureTextEntry
-          value={password}
-          onChangeText={setPassword}
-          onSubmitEditing={submit}
-        />
+            <View style={{ gap: 14, marginTop: 32 }}>
+              <View style={{ gap: 6 }}>
+                <Txt variant="label">Alamat server</Txt>
+                <Input
+                  icon={Server}
+                  placeholder="192.168.1.10:8088"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  keyboardType="url"
+                  value={url}
+                  onChangeText={setUrl}
+                />
+              </View>
+              <View style={{ gap: 6 }}>
+                <Txt variant="label">Password</Txt>
+                <Input
+                  icon={Lock}
+                  placeholder="••••••••"
+                  secureTextEntry
+                  value={password}
+                  onChangeText={setPassword}
+                  onSubmitEditing={submit}
+                />
+              </View>
 
-        {error && <Text style={{ color: t.danger, marginTop: 8 }}>{error}</Text>}
+              {error && (
+                <View style={[styles.alert, { borderColor: t.danger + '55', backgroundColor: t.danger + '14' }]}>
+                  <CircleAlert size={16} color={t.danger} />
+                  <Txt variant="muted" style={{ color: t.danger, flex: 1 }}>
+                    {error}
+                  </Txt>
+                </View>
+              )}
 
-        <Pressable
-          style={[styles.button, { backgroundColor: t.accent, opacity: busy || !url ? 0.6 : 1 }]}
-          disabled={busy || !url}
-          onPress={submit}
-        >
-          {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>Masuk</Text>}
-        </Pressable>
-      </KeyboardAvoidingView>
-    </SafeAreaView>
+              <Button
+                label="Hubungkan"
+                iconRight={ArrowRight}
+                loading={busy}
+                disabled={!url}
+                onPress={submit}
+                style={{ marginTop: 6 }}
+              />
+            </View>
+          </View>
+
+          <Txt variant="mono" style={{ textAlign: 'center', color: t.subtleText, paddingBottom: 8 }}>
+            Akses dari luar rumah? Pakai Tailscale.
+          </Txt>
+        </KeyboardAvoidingView>
+      </SafeAreaView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 24, justifyContent: 'center' },
-  title: { fontSize: 32, fontWeight: '700', marginBottom: 4 },
-  label: { fontSize: 13, marginTop: 12, marginBottom: 6 },
-  input: { borderWidth: 1, borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12, fontSize: 16 },
-  button: { marginTop: 24, borderRadius: 10, paddingVertical: 14, alignItems: 'center' },
-  buttonText: { color: '#fff', fontSize: 16, fontWeight: '600' },
+  container: { flex: 1, paddingHorizontal: 24 },
+  logoRing: { width: 52, height: 52, borderRadius: radius.lg + 2, padding: 1.5 },
+  logo: { flex: 1, borderRadius: radius.lg, alignItems: 'center', justifyContent: 'center' },
+  alert: { flexDirection: 'row', alignItems: 'center', gap: 8, borderWidth: 1, borderRadius: radius.md, padding: 12 },
 });

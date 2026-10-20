@@ -114,3 +114,7 @@ export function formatBytes(n: number): string {
 
 export const isImage = (e: Entry) => !!e.mime?.startsWith('image/') || /\.(heic|heif|webp)$/i.test(e.name);
 export const isVideo = (e: Entry) => !!e.mime?.startsWith('video/') || /\.(mov|mkv|m4v)$/i.test(e.name);
+
+export function formatDate(iso: string): string {
+  return new Date(iso).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' });
+}

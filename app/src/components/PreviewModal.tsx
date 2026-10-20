@@ -1,11 +1,15 @@
 import { useState } from 'react';
-import { ActivityIndicator, Alert, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Modal, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
+import { BlurView } from 'expo-blur';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { Directory, File, Paths } from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
-import { fileUrl, formatBytes, isImage, isVideo, type Entry, type Session } from '../api';
+import { Download, FileText, X } from 'lucide-react-native';
+import { fileUrl, formatBytes, formatDate, isImage, isVideo, type Entry, type Session } from '../api';
+import { radius } from '../theme';
+import { IconButton, Txt } from './ui';
 
 /** Download file ke cache lalu buka share sheet (di iOS ada opsi "Save Image/Video" ke Photos). */
 export async function shareEntry(session: Session, entry: Entry) {
@@ -47,30 +51,46 @@ export default function PreviewModal({
   };
 
   return (
-    <Modal visible animationType="slide" onRequestClose={onClose} supportedOrientations={['portrait', 'landscape']}>
+    <Modal visible animationType="fade" onRequestClose={onClose} supportedOrientations={['portrait', 'landscape']}>
       <View style={styles.root}>
         {isImage(entry) ? (
-          <Image source={{ uri }} style={StyleSheet.absoluteFill} contentFit="contain" transition={150} />
+          <Image source={{ uri }} style={StyleSheet.absoluteFill} contentFit="contain" transition={200} />
         ) : isVideo(entry) ? (
           <VideoPreview uri={uri} />
         ) : (
           <View style={styles.center}>
-            <Text style={{ fontSize: 64 }}>📄</Text>
-            <Text style={styles.name}>{entry.name}</Text>
-            <Text style={{ color: '#aaa' }}>{formatBytes(entry.size)}</Text>
+            <View style={styles.fileTile}>
+              <FileText size={36} color="#fafafa" strokeWidth={1.4} />
+            </View>
+            <Txt variant="mono" style={{ color: '#a1a1aa', marginTop: 4 }}>
+              {entry.mime || 'file'}
+            </Txt>
           </View>
         )}
-        <SafeAreaView edges={['top']} style={styles.bar} pointerEvents="box-none">
-          <Pressable onPress={onClose} style={styles.btn} hitSlop={10}>
-            <Text style={styles.btnText}>✕</Text>
-          </Pressable>
-          <Text style={styles.title} numberOfLines={1}>
-            {entry.name}
-          </Text>
-          <Pressable onPress={share} style={styles.btn} hitSlop={10} disabled={sharing}>
-            {sharing ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnText}>⤓</Text>}
-          </Pressable>
+
+        <SafeAreaView edges={['top']} style={styles.top} pointerEvents="box-none">
+          <IconButton icon={X} variant="glass" size={40} onPress={onClose} />
+          {sharing ? (
+            <View style={styles.spinner}>
+              <ActivityIndicator color="#fafafa" />
+            </View>
+          ) : (
+            <IconButton icon={Download} variant="glass" size={40} onPress={share} />
+          )}
         </SafeAreaView>
+
+        {!isVideo(entry) && (
+          <SafeAreaView edges={['bottom']} style={styles.bottom} pointerEvents="box-none">
+            <BlurView intensity={40} tint="dark" style={styles.info}>
+              <Txt variant="body" numberOfLines={1} style={{ color: '#fafafa' }}>
+                {entry.name}
+              </Txt>
+              <Txt variant="mono" style={{ color: '#a1a1aa', marginTop: 2 }}>
+                {formatBytes(entry.size)} · {formatDate(entry.modTime)}
+              </Txt>
+            </BlurView>
+          </SafeAreaView>
+        )}
       </View>
     </Modal>
   );
@@ -78,10 +98,27 @@ export default function PreviewModal({
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#000' },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 8, padding: 24 },
-  name: { color: '#fff', fontSize: 17, textAlign: 'center' },
-  bar: { position: 'absolute', top: 0, left: 0, right: 0, flexDirection: 'row', alignItems: 'center', padding: 8 },
-  btn: { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(0,0,0,0.5)', alignItems: 'center', justifyContent: 'center' },
-  btnText: { color: '#fff', fontSize: 18 },
-  title: { flex: 1, color: '#fff', textAlign: 'center', marginHorizontal: 8, fontWeight: '600', textShadowColor: '#000', textShadowRadius: 4 },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 8 },
+  fileTile: {
+    width: 88,
+    height: 88,
+    borderRadius: radius.xl,
+    borderWidth: 1,
+    borderColor: '#27272a',
+    backgroundColor: '#18181b',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  top: { position: 'absolute', top: 0, left: 0, right: 0, flexDirection: 'row', justifyContent: 'space-between', padding: 12 },
+  spinner: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
+  bottom: { position: 'absolute', bottom: 0, left: 0, right: 0, padding: 12 },
+  info: {
+    borderRadius: radius.lg,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    overflow: 'hidden',
+    borderWidth: StyleSheet.hairlineWidth * 2,
+    borderColor: 'rgba(255,255,255,0.12)',
+    backgroundColor: 'rgba(24,24,27,0.55)',
+  },
 });
