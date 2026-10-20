@@ -1,4 +1,4 @@
-import { useState, type ComponentType, type ReactNode } from 'react';
+import { useRef, useState, type ComponentType, type ReactNode, type Ref } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -8,6 +8,7 @@ import {
   View,
   type PressableProps,
   type StyleProp,
+  type TextInputInstance,
   type TextInputProps,
   type TextProps,
   type ViewStyle,
@@ -124,11 +125,27 @@ export function IconButton({
   );
 }
 
-export function Input({ icon: IconCmp, style, ...rest }: TextInputProps & { icon?: Icon }) {
+/**
+ * Input teks. Seluruh kotak bisa di-tap untuk fokus (bukan hanya baris teksnya),
+ * dan `ref` diteruskan ke TextInput agar layar bisa memindah fokus ke kolom berikutnya.
+ */
+export function Input({
+  icon: IconCmp,
+  style,
+  ref,
+  ...rest
+}: TextInputProps & { icon?: Icon; ref?: Ref<TextInputInstance> }) {
   const t = useTheme();
   const [focused, setFocused] = useState(false);
+  const inner = useRef<TextInputInstance>(null);
+  const setRef = (node: TextInputInstance | null) => {
+    inner.current = node;
+    if (typeof ref === 'function') ref(node);
+    else if (ref) (ref as { current: TextInputInstance | null }).current = node;
+  };
   return (
-    <View
+    <Pressable
+      onPress={() => inner.current?.focus()}
       style={[
         styles.input,
         { borderColor: focused ? t.ring : t.border, backgroundColor: t.dark ? t.muted + '80' : t.bg },
@@ -137,13 +154,31 @@ export function Input({ icon: IconCmp, style, ...rest }: TextInputProps & { icon
     >
       {IconCmp && <IconCmp size={16} color={t.subtleText} strokeWidth={1.75} />}
       <TextInput
+        ref={setRef}
         placeholderTextColor={t.subtleText}
-        onFocus={() => setFocused(true)}
-        onBlur={() => setFocused(false)}
-        style={[{ flex: 1, color: t.text, fontFamily: font.regular, fontSize: 15, paddingVertical: 0, outlineStyle: 'none' } as any, style]}
         {...rest}
+        onFocus={(e) => {
+          setFocused(true);
+          rest.onFocus?.(e);
+        }}
+        onBlur={(e) => {
+          setFocused(false);
+          rest.onBlur?.(e);
+        }}
+        style={[
+          {
+            flex: 1,
+            alignSelf: 'stretch',
+            color: t.text,
+            fontFamily: font.regular,
+            fontSize: 15,
+            paddingVertical: 0,
+            outlineStyle: 'none',
+          } as any,
+          style,
+        ]}
       />
-    </View>
+    </Pressable>
   );
 }
 

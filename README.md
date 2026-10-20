@@ -11,6 +11,18 @@ File manager mobile (iPhone & Android) untuk upload, melihat, dan mengelola foto
 └──────────────┘                                  └────────────────────────────────┘
 ```
 
+### Cara kerja koneksi
+
+App **tidak** login ke dashboard CasaOS. CasaOS tidak menyediakan API resmi untuk aplikasi pihak ketiga,
+jadi repo ini menyertakan server kecil sendiri (`casa-files-server`) yang dipasang di mesin CasaOS dan
+membaca/menulis folder yang sama dengan menu **Files** di CasaOS. File yang di-upload lewat app akan
+langsung terlihat juga di CasaOS Files (dan sebaliknya), selama `STORAGE_PATH` menunjuk ke folder itu.
+
+| | Dashboard CasaOS | Server Casa Files (untuk app) |
+|---|---|---|
+| Alamat | `http://<ip-server>` (port 80) | `<ip-server>:8088` |
+| Password | Akun CasaOS | Password yang dibuat saat menjalankan `install.sh` |
+
 | Folder | Isi | Dijalankan di |
 |---|---|---|
 | `server/` | API Go (stdlib, tanpa dependency) + Dockerfile | Server CasaOS |

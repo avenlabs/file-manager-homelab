@@ -1,4 +1,4 @@
-import { StyleSheet } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import Svg, { Defs, Path, Pattern, RadialGradient, Rect, Stop } from 'react-native-svg';
 import { useTheme } from '../theme';
 
@@ -6,7 +6,9 @@ import { useTheme } from '../theme';
 export default function GridBackdrop({ cell = 28 }: { cell?: number }) {
   const t = useTheme();
   return (
-    <Svg style={StyleSheet.absoluteFill} pointerEvents="none">
+    // Dibungkus View pointerEvents="none" agar latar tidak pernah menangkap sentuhan.
+    <View style={StyleSheet.absoluteFill} pointerEvents="none">
+    <Svg style={StyleSheet.absoluteFill}>
       <Defs>
         <Pattern id="grid" width={cell} height={cell} patternUnits="userSpaceOnUse">
           <Path d={`M ${cell} 0 L 0 0 0 ${cell}`} fill="none" stroke={t.grid} strokeWidth={1} />
@@ -25,5 +27,6 @@ export default function GridBackdrop({ cell = 28 }: { cell?: number }) {
       <Rect width="100%" height="100%" fill="url(#fade)" />
       <Rect width="100%" height="60%" fill="url(#glow)" />
     </Svg>
+    </View>
   );
 }

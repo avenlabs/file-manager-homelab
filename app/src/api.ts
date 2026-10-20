@@ -40,13 +40,48 @@ async function request<T>(s: Session, method: string, path: string, body?: unkno
   return data as T;
 }
 
+/** fetch dengan batas waktu, agar alamat yang salah tidak menggantung lama. */
+async function fetchWithTimeout(url: string, init: RequestInit = {}, ms = 8000) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  try {
+    return await fetch(url, { ...init, signal: ctrl.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Cek server lalu login. Pesan error dibuat jelas untuk kesalahan umum:
+ * server tidak terjangkau, alamat menunjuk ke dashboard CasaOS, atau password salah.
+ */
 export async function login(baseUrl: string, password: string): Promise<Session> {
-  const res = await fetch(`${baseUrl}/api/login`, {
+  let health: Response;
+  try {
+    health = await fetchWithTimeout(`${baseUrl}/api/health`);
+  } catch {
+    throw new Error(
+      `Tidak bisa terhubung ke ${baseUrl}. Pastikan server casa-files sudah terinstall & berjalan, ` +
+        'dan HP satu Wi-Fi dengan server (atau Tailscale aktif).',
+    );
+  }
+  const status = await health.json().catch(() => null);
+  if (!health.ok || status?.status !== 'ok') {
+    throw new Error(
+      'Alamat ini bukan server Casa Files (mungkin dashboard CasaOS). ' +
+        'Gunakan port server casa-files, biasanya :8088.',
+    );
+  }
+
+  const res = await fetchWithTimeout(`${baseUrl}/api/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ password }),
   });
   const data = await res.json().catch(() => ({}));
+  if (res.status === 401) {
+    throw new ApiError(401, 'Password salah. Gunakan password yang dibuat saat install server (bukan password CasaOS).');
+  }
   if (!res.ok) throw new ApiError(res.status, data.error ?? `HTTP ${res.status}`);
   return { baseUrl, token: data.token };
 }
