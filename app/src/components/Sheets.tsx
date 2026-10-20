@@ -13,7 +13,7 @@ export type SheetAction = {
   destructive?: boolean;
 };
 
-function BottomSheet({ visible, onClose, children }: { visible: boolean; onClose: () => void; children: ReactNode }) {
+export function BottomSheet({ visible, onClose, children }: { visible: boolean; onClose: () => void; children: ReactNode }) {
   const t = useTheme();
   const insets = useSafeAreaInsets();
   return (

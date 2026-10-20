@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -181,5 +183,124 @@ func TestStats(t *testing.T) {
 	}
 	if st.Largest[0].Path != "/Videos/c.mp4" || st.Location.Root != e.root || st.Disk.Total == 0 {
 		t.Fatalf("largest/location/disk: %+v %+v %+v", st.Largest[0], st.Location, st.Disk)
+	}
+}
+
+type initResp struct {
+	Status string `json:"status"`
+	ID     string `json:"id"`
+	Offset int64  `json:"offset"`
+}
+
+// errAfter mengembalikan data lalu error, mensimulasikan koneksi putus di tengah potongan.
+type errAfter struct{ data []byte }
+
+func (r *errAfter) Read(p []byte) (int, error) {
+	if len(r.data) == 0 {
+		return 0, io.ErrUnexpectedEOF
+	}
+	n := copy(p, r.data)
+	r.data = r.data[n:]
+	return n, nil
+}
+
+func (e *testEnv) put(id string, offset int64, body io.Reader) (int, int64) {
+	req := httptest.NewRequest("PUT", fmt.Sprintf("/api/uploads/%s?offset=%d", id, offset), body)
+	req.Header.Set("Authorization", "Bearer "+e.tok)
+	rec := httptest.NewRecorder()
+	e.h.ServeHTTP(rec, req)
+	var out struct{ Offset int64 }
+	json.Unmarshal(rec.Body.Bytes(), &out)
+	return rec.Code, out.Offset
+}
+
+func TestResumableUpload(t *testing.T) {
+	e := newEnv(t)
+	e.write("Videos/.keep", "")
+	content := bytes.Repeat([]byte("0123456789"), 1000) // 10.000 byte
+	init := map[string]any{"dir": "/Videos", "name": "big.mov", "size": len(content)}
+
+	var r initResp
+	e.do("POST", "/api/uploads", init, &r)
+	if r.Status != "upload" || r.Offset != 0 || len(r.ID) != 32 {
+		t.Fatalf("init: %+v", r)
+	}
+
+	// Potongan pertama 4000 byte sukses.
+	if code, off := e.put(r.ID, 0, bytes.NewReader(content[:4000])); code != 200 || off != 4000 {
+		t.Fatalf("chunk 1: %d %d", code, off)
+	}
+	// Potongan kedua putus setelah 1500 byte → byte yang sudah masuk tetap tersimpan.
+	if code, off := e.put(r.ID, 4000, &errAfter{data: content[4000:5500]}); code != 400 || off != 5500 {
+		t.Fatalf("chunk putus: %d %d", code, off)
+	}
+	// Offset salah → 409 dengan offset sebenarnya.
+	if code, off := e.put(r.ID, 4000, bytes.NewReader(content[4000:])); code != 409 || off != 5500 {
+		t.Fatalf("offset salah: %d %d", code, off)
+	}
+	// Mulai ulang (mis. app ditutup) → init yang sama melanjutkan dari 5500.
+	var r2 initResp
+	e.do("POST", "/api/uploads", init, &r2)
+	if r2.ID != r.ID || r2.Offset != 5500 {
+		t.Fatalf("resume: %+v", r2)
+	}
+	if code, off := e.put(r.ID, 5500, bytes.NewReader(content[5500:])); code != 200 || off != 10000 {
+		t.Fatalf("chunk akhir: %d %d", code, off)
+	}
+	var done struct {
+		Status string `json:"status"`
+		File   entry  `json:"file"`
+	}
+	e.do("POST", "/api/uploads/"+r.ID+"/complete", nil, &done)
+	got, _ := os.ReadFile(filepath.Join(e.root, "Videos/big.mov"))
+	if done.Status != "done" || !bytes.Equal(got, content) {
+		t.Fatalf("complete: %+v, isi sama=%v", done, bytes.Equal(got, content))
+	}
+
+	// Idempotent: upload ulang file yang sama → dilewati, tanpa duplikat "(1)".
+	var r3 initResp
+	e.do("POST", "/api/uploads", init, &r3)
+	if r3.Status != "exists" {
+		t.Fatalf("upload ulang harus dilewati: %+v", r3)
+	}
+	// Complete diulang setelah sukses → 404 (client lalu init → exists).
+	if code := e.do("POST", "/api/uploads/"+r.ID+"/complete", nil, nil); code != 404 {
+		t.Fatalf("complete ulang: %d", code)
+	}
+	if e.exists("Videos/big (1).mov") {
+		t.Fatal("tidak boleh ada duplikat")
+	}
+}
+
+func TestUploadNameConflictDifferentSize(t *testing.T) {
+	e := newEnv(t)
+	e.write("a.jpg", "lama")
+	var r initResp
+	e.do("POST", "/api/uploads", map[string]any{"dir": "/", "name": "a.jpg", "size": 3}, &r)
+	if r.Status != "upload" {
+		t.Fatalf("ukuran beda harus tetap diupload: %+v", r)
+	}
+	e.put(r.ID, 0, bytes.NewReader([]byte("abc")))
+	e.do("POST", "/api/uploads/"+r.ID+"/complete", nil, nil)
+	if !e.exists("a (1).jpg") || !e.exists("a.jpg") {
+		t.Fatal("file lama tidak boleh tertimpa")
+	}
+}
+
+func TestUploadInitValidation(t *testing.T) {
+	e := newEnv(t)
+	if code := e.do("POST", "/api/uploads", map[string]any{"dir": "/nope", "name": "a", "size": 1}, nil); code != 400 {
+		t.Fatalf("folder tidak ada: %d", code)
+	}
+	if code := e.do("POST", "/api/uploads", map[string]any{"dir": "/", "name": "../x", "size": 1}, nil); code != 400 {
+		t.Fatalf("nama tidak valid: %d", code)
+	}
+	if code, _ := e.put("bukan-id-valid", 0, bytes.NewReader(nil)); code != 404 {
+		t.Fatalf("id tidak valid: %d", code)
+	}
+	// Butuh ruang melebihi disk → 507 dengan pesan jelas.
+	var res map[string]any
+	if code := e.do("POST", "/api/uploads", map[string]any{"dir": "/", "name": "huge.bin", "size": int64(1) << 62}, &res); code != 507 {
+		t.Fatalf("disk penuh harus 507: %d %v", code, res)
 	}
 }

@@ -32,8 +32,14 @@ langsung terlihat juga di CasaOS Files (dan sebaliknya), selama `STORAGE_PATH` m
 
 - Browse folder (list / grid), filter Semua / Foto / Video / Dokumen, cari nama file
 - Upload multi foto & video dari galeri (file asli HEIC/HEVC), kamera, atau file apa pun
-- Antrian upload (2 paralel), progress, cancel, tetap jalan saat app di-minimize
-- Upload di-stream ke disk → video ukuran GB aman; nama bentrok otomatis jadi `foto (1).jpg`
+- **Upload tahan gangguan** (cocok untuk puluhan GB):
+  - file dikirim per potongan 16MB; kalau koneksi putus, **lanjut dari byte terakhir**, bukan dari nol
+  - potongan yang macet (45 detik tanpa progres) otomatis dibatalkan & dicoba ulang (jeda 2s → 30s)
+  - setelah 5x gagal beruntun, file **dilewati** dan antrian lanjut ke file berikutnya
+  - ringkasan akhir: file yang gagal + **alasannya** (koneksi putus, storage penuh, file hilang di HP, …), tombol *Coba lagi*
+  - **idempotent**: file yang sudah ada (nama & ukuran sama) dilewati, tanpa duplikat `(1)`
+  - storage tidak cukup terdeteksi di awal (tidak gagal di 99%); layar tetap menyala selama upload
+- Antrian upload (2 paralel), progress, batal; nama bentrok dengan isi berbeda jadi `foto (1).jpg`
 - **Mode pilih**: pilih semua, lalu salin / pindah (clipboard → buka folder tujuan → Tempel), flag, hapus
 - **Flag warna** (merah, oranye, kuning, hijau, biru, ungu, abu) + filter per warna; flag ikut saat file dipindah/rename
 - Preview: foto, video, audio, teks/kode (md, json, go, js, csv, log, …), PDF (iOS)
@@ -71,6 +77,9 @@ Service otomatis jalan saat boot dan menunggu disk eksternal ter-mount.
 | Ubah password / storage | `sudo nano /etc/casa-files/casa-files.env` lalu restart |
 | Update ke versi terbaru | jalankan ulang perintah install (konfigurasi tetap) |
 | Uninstall | `sudo systemctl disable --now casa-files && sudo rm /etc/systemd/system/casa-files.service /usr/local/bin/casa-files-server` |
+
+Sudah `git clone` repo ini di server? Cukup `sudo ./server/install.sh` — installer memakai source lokal
+(tidak perlu download dari GitHub, cocok juga untuk repo private).
 
 Tanpa akses internet di server? Download `casa-files-server-linux-arm64` dan `install.sh` dari
 [halaman Releases](https://github.com/avenlabs/file-manager-homelab/releases), copy ke server, lalu
@@ -158,7 +167,7 @@ Lalu scan QR code yang muncul:
 
 Di layar login isi alamat server, mis. `192.168.1.10:8088`, dan `APP_PASSWORD` dari file `.env`.
 
-Cek kode: `npm run typecheck` dan `npm run lint`.
+Cek kode: `npm run typecheck`, `npm run lint`, dan `npm run test:upload` (tes ketahanan upload dengan server Go asli; butuh Go).
 
 Navigasi memakai Expo Router (`app/src/app/`): `index` (file), `analytics`, `settings`, `login`.
 
@@ -189,6 +198,10 @@ Semua endpoint (kecuali health & login) butuh `Authorization: Bearer <token>` at
 | GET | `/api/list?path=/Photos` | isi folder (`&hidden=1` untuk dotfiles) |
 | GET | `/api/file?path=...` | download/stream, dukung Range (`&download=1` untuk attachment) |
 | POST | `/api/upload?path=/dir[&name=x.jpg]` | multipart/form-data |
+| POST | `/api/uploads` | mulai/lanjutkan upload resumable `{dir, name, size}` → `{id, offset}` atau `{status:"exists"}` |
+| PUT | `/api/uploads/{id}?offset=N` | kirim potongan byte mulai offset N → `{offset}` (409 = offset tidak cocok) |
+| POST | `/api/uploads/{id}/complete` | selesaikan & pindahkan ke folder tujuan |
+| DELETE | `/api/uploads/{id}` | batalkan & hapus sisa upload |
 | POST | `/api/mkdir` | `{"path"}` |
 | POST | `/api/rename` | `{"from","to"}` |
 | DELETE | `/api/delete?path=...` | hapus file/folder |

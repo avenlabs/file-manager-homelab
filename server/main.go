@@ -31,6 +31,7 @@ type server struct {
 	tokenTTL time.Duration
 	meta     *metaStore
 	stats    statsCache
+	upLocks  uploadLocks
 }
 
 type entry struct {
@@ -74,6 +75,13 @@ func main() {
 
 	s := &server{root: absRoot, password: password, secret: secret, tokenTTL: time.Duration(ttlHours) * time.Hour, meta: meta}
 
+	go func() {
+		for {
+			s.cleanupStaleUploads()
+			time.Sleep(24 * time.Hour)
+		}
+	}()
+
 	addr := ":" + env("PORT", "8088")
 	srv := &http.Server{
 		Addr:              addr,
@@ -103,6 +111,10 @@ func (s *server) routes() *http.ServeMux {
 	mux.Handle("POST /api/move", s.auth(s.handleTransfer(true)))
 	mux.Handle("POST /api/flag", s.auth(s.handleFlag))
 	mux.Handle("GET /api/stats", s.auth(s.handleStats))
+	mux.Handle("POST /api/uploads", s.auth(s.handleUploadInit))
+	mux.Handle("PUT /api/uploads/{id}", s.auth(s.handleUploadChunk))
+	mux.Handle("POST /api/uploads/{id}/complete", s.auth(s.handleUploadComplete))
+	mux.Handle("DELETE /api/uploads/{id}", s.auth(s.handleUploadAbort))
 	return mux
 }
 
@@ -330,6 +342,10 @@ func (s *server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		e, err := s.saveUpload(dir, name, part)
 		part.Close()
 		if err != nil {
+			if isNoSpace(err) {
+				writeNoSpace(w, 0, diskUsage(s.root).Free)
+				return
+			}
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}

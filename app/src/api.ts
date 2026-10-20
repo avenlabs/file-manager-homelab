@@ -159,24 +159,98 @@ export function fileUrl(s: Session, path: string, download = false): string {
   return `${s.baseUrl}/api/file?${q}${download ? '&download=1' : ''}`;
 }
 
-/** Membuat upload task (belum dimulai). sessionType background agar tetap jalan saat app di-minimize. */
-export function createUpload(
+// ---------- upload resumable (lihat server/uploads.go) ----------
+
+/** Error upload. `fatal` = tidak ada gunanya dicoba ulang (mis. disk penuh, file hilang). */
+export class UploadError extends Error {
+  constructor(
+    message: string,
+    public fatal = false,
+  ) {
+    super(message);
+  }
+}
+
+/** Ubah respons gagal menjadi alasan yang bisa dibaca manusia. */
+export function uploadErrorFrom(status: number, body: { error?: string; code?: string } | null): UploadError {
+  const detail = body?.error?.trim();
+  if (status === 507 || body?.code === 'no_space') return new UploadError(detail || 'Storage server penuh', true);
+  if (status === 401) return new UploadError('Sesi login berakhir. Silakan login ulang.', true);
+  if (status === 400 && !detail) return new UploadError('Permintaan ditolak server (data tidak valid)', true);
+  if (status === 404) return new UploadError(detail || 'Sesi upload hilang di server');
+  if (status >= 500) return new UploadError(`Server error ${status}${detail ? `: ${detail}` : ' (tanpa keterangan)'}`);
+  return new UploadError(detail || `Gagal tanpa keterangan dari server (HTTP ${status})`);
+}
+
+/** Alasan untuk error jaringan (fetch/upload task gagal tanpa respons). */
+export function networkReason(e: unknown): string {
+  const msg = String((e as any)?.message ?? e ?? '').toLowerCase();
+  if (msg.includes('abort') || msg.includes('timeout') || msg.includes('timed out')) return 'Server tidak merespons (timeout)';
+  if (msg.includes('offline') || msg.includes('internet')) return 'HP sedang offline';
+  if (msg.includes('network') || msg.includes('connect') || msg.includes('host') || msg.includes('reset'))
+    return 'Koneksi ke server terputus';
+  return msg ? `Kesalahan jaringan: ${(e as any)?.message ?? e}` : 'Kesalahan jaringan tanpa keterangan';
+}
+
+async function uploadRequest<T>(s: Session, method: string, path: string, body?: unknown): Promise<{ status: number; data: T }> {
+  let res: Response;
+  try {
+    res = await fetchWithTimeout(
+      `${s.baseUrl}/api${path}`,
+      {
+        method,
+        headers: { Authorization: `Bearer ${s.token}`, 'Content-Type': 'application/json' },
+        body: body ? JSON.stringify(body) : undefined,
+      },
+      20000,
+    );
+  } catch (e) {
+    throw new UploadError(networkReason(e));
+  }
+  const data = await res.json().catch(() => null);
+  return { status: res.status, data: data as T };
+}
+
+export type UploadInit = { status: 'exists'; path: string } | { status: 'upload'; id: string; offset: number; size: number };
+
+export async function initUpload(s: Session, dir: string, name: string, size: number, modTime?: number) {
+  const { status, data } = await uploadRequest<UploadInit & { error?: string; code?: string }>(s, 'POST', '/uploads', {
+    dir,
+    name,
+    size,
+    ...(modTime ? { modTime: new Date(modTime).toISOString() } : {}),
+  });
+  if (status !== 200) throw uploadErrorFrom(status, data);
+  return data;
+}
+
+/** Selesaikan upload. Mengembalikan 'retry' jika sesi perlu di-init ulang (mis. respons sebelumnya hilang). */
+export async function completeUpload(s: Session, id: string): Promise<'done' | 'retry'> {
+  const { status, data } = await uploadRequest<{ error?: string; code?: string }>(s, 'POST', `/uploads/${id}/complete`);
+  if (status === 200) return 'done';
+  if (status === 404 || status === 409) return 'retry';
+  throw uploadErrorFrom(status, data);
+}
+
+export async function abortUpload(s: Session, id: string) {
+  await uploadRequest(s, 'DELETE', `/uploads/${id}`).catch(() => {});
+}
+
+/** Task untuk mengirim satu potongan file (PUT byte mentah) mulai dari `offset`. */
+export function createChunkTask(
   s: Session,
-  localUri: string,
-  destDir: string,
-  name: string,
-  mimeType: string | undefined,
-  onProgress: (sent: number, total: number) => void,
+  id: string,
+  offset: number,
+  chunk: File,
+  onProgress: (bytesSent: number) => void,
 ): UploadTask {
-  const url = `${s.baseUrl}/api/upload?path=${encodeURIComponent(destDir)}&name=${encodeURIComponent(name)}`;
-  return new File(localUri).createUploadTask(url, {
-    httpMethod: 'POST',
-    uploadType: UploadType.MULTIPART,
-    fieldName: 'file',
-    mimeType,
-    headers: { Authorization: `Bearer ${s.token}` },
+  return chunk.createUploadTask(`${s.baseUrl}/api/uploads/${id}?offset=${offset}`, {
+    httpMethod: 'PUT',
+    uploadType: UploadType.BINARY_CONTENT,
+    headers: { Authorization: `Bearer ${s.token}`, 'Content-Type': 'application/octet-stream' },
+    // Tetap jalan saat app di-minimize.
     sessionType: 'background',
-    onProgress: ({ bytesSent, totalBytes }) => onProgress(bytesSent, totalBytes),
+    onProgress: ({ bytesSent }) => onProgress(bytesSent),
   });
 }
 

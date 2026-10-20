@@ -5,6 +5,7 @@ import {
   FlatList,
   Pressable,
   RefreshControl,
+  ScrollView,
   StyleSheet,
   Text,
   useWindowDimensions,
@@ -36,9 +37,11 @@ import {
   List,
   Pencil,
   Plus,
+  RotateCcw,
   Search,
   Share2,
   Trash2,
+  TriangleAlert,
   X,
 } from 'lucide-react-native';
 import {
@@ -60,8 +63,8 @@ import {
 } from '../api';
 import { categoryOf, extLabel, iconFor, previewKind, type Category } from '../fileTypes';
 import { flagColors, flagLabels, font, radius, useTheme, type FlagColor } from '../theme';
-import { useUploads, type PickedFile } from '../useUploads';
-import { ActionSheet, ConfirmSheet, FlagSheet, PromptSheet, type SheetAction } from '../components/Sheets';
+import { useUploads, type PickedFile, type UploadSummary } from '../useUploads';
+import { ActionSheet, BottomSheet, ConfirmSheet, FlagSheet, PromptSheet, type SheetAction } from '../components/Sheets';
 import PreviewModal, { openWithApp, shareEntry } from '../components/PreviewModal';
 import { Screen } from '../components/Screen';
 import { Bar, Button, Hatch, IconButton, Input, Segmented, Txt } from '../components/ui';
@@ -198,8 +201,17 @@ export default function BrowserScreen({
     },
     [fetchDir],
   );
-  const uploads = useUploads(session, onUploadDone);
-  const activeUploads = uploads.items.filter((i) => i.status === 'uploading' || i.status === 'queued').length;
+  const [showFailed, setShowFailed] = useState(false);
+  const onUploadsSettled = useCallback((sum: UploadSummary) => {
+    // Kegagalan ditampilkan lewat kartu peringatan di panel upload.
+    if (sum.failed.length) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+    } else if (sum.done || sum.skipped) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+    }
+  }, []);
+  const uploads = useUploads(session, onUploadDone, onUploadsSettled);
+  const activeUploads = uploads.items.filter((i) => i.status === 'uploading' || i.status === 'queued' || i.status === 'retrying').length;
 
   // ---------- data turunan ----------
 
@@ -535,7 +547,7 @@ export default function BrowserScreen({
             </Txt>
           </View>
         )}
-        <UploadPanel uploads={uploads} />
+        <UploadPanel uploads={uploads} onShowFailed={() => setShowFailed(true)} />
 
         {selected ? (
           <View style={[styles.actionBar, { backgroundColor: t.bg }]}>
@@ -622,6 +634,11 @@ export default function BrowserScreen({
           setPrompt(null);
           run('prompt', () => fn(v));
         }}
+      />
+      <FailedSheet
+        visible={showFailed}
+        uploads={uploads}
+        onClose={() => setShowFailed(false)}
       />
       <PreviewModal session={session} entry={preview} onClose={() => setPreview(null)} />
     </Screen>
@@ -818,31 +835,63 @@ function ActionBtn({
   );
 }
 
-function UploadPanel({ uploads }: { uploads: ReturnType<typeof useUploads> }) {
+function UploadPanel({ uploads, onShowFailed }: { uploads: ReturnType<typeof useUploads>; onShowFailed: () => void }) {
   const t = useTheme();
-  const { items, cancel, clearFinished } = uploads;
+  const { items, summary, running, cancelAll, retryFailed, clearFinished } = uploads;
   if (items.length === 0) return null;
-  const running = items.filter((i) => i.status === 'uploading' || i.status === 'queued');
-  const failed = items.filter((i) => i.status === 'error');
-  const sent = items.reduce((s, i) => s + (i.status === 'done' ? i.total : i.sent), 0);
-  const total = items.reduce((s, i) => s + i.total, 0);
-  const current = items.find((i) => i.status === 'uploading');
-  const doneCount = items.length - running.length;
+
+  const finished = (s: string) => s === 'done' || s === 'skipped';
+  const sent = items.reduce((acc, i) => acc + (finished(i.status) ? i.size : i.sent), 0);
+  const total = items.reduce((acc, i) => acc + i.size, 0);
+  const handled = summary.done + summary.skipped + summary.failed.length + summary.cancelled;
+  const current = items.find((i) => i.status === 'uploading') ?? items.find((i) => i.status === 'retrying');
+  const retrying = items.find((i) => i.status === 'retrying');
+  const failed = summary.failed.length;
+
+  // Selesai, ada yang gagal → kartu peringatan.
+  if (!running && failed) {
+    return (
+      <View style={[styles.upload, { backgroundColor: '#f8e4b4' }]}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+          <View style={[styles.uploadIcon, { backgroundColor: '#b7791f' }]}>
+            <TriangleAlert size={20} color="#fff" />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Txt variant="label">{failed} file gagal diupload</Txt>
+            <Txt variant="small" style={{ marginTop: 2, color: '#6b5420' }} numberOfLines={2}>
+              {summary.done} berhasil{summary.skipped ? ` · ${summary.skipped} dilewati (sudah ada)` : ''} · {summary.failed[0].error}
+            </Txt>
+          </View>
+          <IconButton icon={X} variant="plain" size={32} color="#6b5420" onPress={clearFinished} accessibilityLabel="Tutup" />
+        </View>
+        <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
+          <Button label="Lihat alasan" size="sm" variant="light" onPress={onShowFailed} style={{ flex: 1 }} />
+          <Button label="Coba lagi" icon={RotateCcw} size="sm" onPress={retryFailed} style={{ flex: 1 }} />
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View style={[styles.upload, { backgroundColor: t.card }]}>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-        <View style={[styles.uploadIcon, { backgroundColor: t.primary }]}>
-          <CloudUpload size={20} color={t.primaryText} />
+        <View style={[styles.uploadIcon, { backgroundColor: running ? t.primary : t.success }]}>
+          {running ? <CloudUpload size={20} color={t.primaryText} /> : <Check size={20} color="#fff" strokeWidth={2.6} />}
         </View>
         <View style={{ flex: 1 }}>
           <Txt variant="label">
-            {running.length > 0
-              ? `Mengupload ${Math.min(doneCount + 1, items.length)} dari ${items.length}`
-              : `Upload selesai${failed.length ? ` · ${failed.length} gagal` : ''}`}
+            {running
+              ? `Mengupload ${Math.min(handled + 1, items.length)} dari ${items.length}`
+              : `Upload selesai · ${summary.done} file`}
           </Txt>
           <Txt variant="small" numberOfLines={1} style={{ marginTop: 2 }}>
-            {current ? current.name : failed[0] ? `${failed[0].name}: ${failed[0].error}` : `${formatBytes(sent)} terkirim`}
+            {running
+              ? current
+                ? `${current.name} · ${formatBytes(current.sent)} / ${formatBytes(current.size)}`
+                : 'Menyiapkan…'
+              : summary.skipped
+                ? `${summary.skipped} dilewati karena sudah ada di server`
+                : `${formatBytes(total)} terkirim`}
           </Txt>
         </View>
         <IconButton
@@ -850,17 +899,96 @@ function UploadPanel({ uploads }: { uploads: ReturnType<typeof useUploads> }) {
           variant="plain"
           size={32}
           color={t.mutedText}
-          onPress={() => (running.length > 0 ? running.forEach((i) => cancel(i.id)) : clearFinished())}
-          accessibilityLabel={running.length > 0 ? 'Batalkan upload' : 'Tutup'}
+          onPress={running ? cancelAll : clearFinished}
+          accessibilityLabel={running ? 'Batalkan semua upload' : 'Tutup'}
         />
       </View>
-      <View style={{ marginTop: 12 }}>
-        <Bar value={total ? sent / total : 0} />
-      </View>
-      <Txt variant="small" style={{ marginTop: 6, fontSize: 11 }}>
-        {formatBytes(sent)} / {formatBytes(total)} · {total ? Math.round((sent / total) * 100) : 0}%
-      </Txt>
+
+      {retrying && (
+        <View style={[styles.retryRow, { backgroundColor: '#f8e4b4' }]}>
+          <RotateCcw size={14} color="#8a5a12" />
+          <Txt variant="small" numberOfLines={2} style={{ flex: 1, color: '#6b5420' }}>
+            {retrying.name}: mencoba ulang {retrying.attempt}/5 · {retrying.error}
+          </Txt>
+        </View>
+      )}
+
+      {running && (
+        <>
+          <View style={{ marginTop: 12 }}>
+            <Bar value={total ? sent / total : 0} />
+          </View>
+          <View style={{ flexDirection: 'row', marginTop: 6, gap: 10 }}>
+            <Txt variant="small" style={{ flex: 1, fontSize: 11 }}>
+              {formatBytes(sent)} / {formatBytes(total)} · {total ? Math.floor((sent / total) * 100) : 0}%
+            </Txt>
+            {summary.skipped > 0 && <Txt variant="small" style={{ fontSize: 11 }}>{summary.skipped} dilewati</Txt>}
+            {failed > 0 && (
+              <Pressable onPress={onShowFailed} hitSlop={8}>
+                <Txt variant="small" style={{ fontSize: 11, color: t.danger }}>
+                  {failed} gagal ›
+                </Txt>
+              </Pressable>
+            )}
+          </View>
+        </>
+      )}
     </View>
+  );
+}
+
+/** Daftar file yang gagal beserta alasannya. */
+function FailedSheet({
+  visible,
+  uploads,
+  onClose,
+}: {
+  visible: boolean;
+  uploads: ReturnType<typeof useUploads>;
+  onClose: () => void;
+}) {
+  const t = useTheme();
+  const failed = uploads.summary.failed;
+  return (
+    <BottomSheet visible={visible} onClose={onClose}>
+      <View style={{ paddingHorizontal: 24 }}>
+        <Txt variant="title">{failed.length} file gagal diupload</Txt>
+        <Txt variant="muted" style={{ marginTop: 4, lineHeight: 20 }}>
+          File lain tetap dilanjutkan. Coba lagi akan melanjutkan dari bagian yang sudah terkirim.
+        </Txt>
+      </View>
+      <ScrollView style={{ maxHeight: 340, marginTop: 14 }} contentContainerStyle={{ paddingHorizontal: 16 }}>
+        {failed.map((f) => (
+          <View key={f.id} style={[styles.failRow, { backgroundColor: t.panel }]}>
+            <TriangleAlert size={18} color={t.danger} />
+            <View style={{ flex: 1 }}>
+              <Txt variant="label" numberOfLines={1}>
+                {f.name}
+              </Txt>
+              <Txt variant="small" style={{ marginTop: 2 }}>
+                {f.error || 'Gagal tanpa keterangan'}
+              </Txt>
+              <Txt variant="small" style={{ marginTop: 2, fontSize: 11 }}>
+                {formatBytes(f.sent)} / {formatBytes(f.size)} terkirim · ke {f.destDir}
+              </Txt>
+            </View>
+          </View>
+        ))}
+      </ScrollView>
+      <View style={{ flexDirection: 'row', gap: 10, paddingHorizontal: 20, marginTop: 14 }}>
+        <Button label="Tutup" variant="outline" onPress={onClose} style={{ flex: 1 }} />
+        <Button
+          label="Coba lagi"
+          icon={RotateCcw}
+          disabled={!failed.length}
+          onPress={() => {
+            uploads.retryFailed();
+            onClose();
+          }}
+          style={{ flex: 1.3 }}
+        />
+      </View>
+    </BottomSheet>
   );
 }
 
@@ -895,5 +1023,7 @@ const styles = StyleSheet.create({
   clipBar: { flexDirection: 'row', alignItems: 'center', gap: 10, borderRadius: radius.xl, padding: 12, paddingLeft: 18 },
   upload: { borderRadius: radius.xl, padding: 14 },
   uploadIcon: { width: 40, height: 40, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  retryRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10, padding: 8, borderRadius: 12 },
+  failRow: { flexDirection: 'row', gap: 12, padding: 12, borderRadius: 16, marginBottom: 8 },
   busy: { alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(43,43,39,0.15)' },
 });

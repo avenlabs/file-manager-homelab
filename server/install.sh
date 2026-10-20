@@ -43,12 +43,25 @@ go_ok() {
   [ "${v%%.*}" -gt 1 ] || { [ "${v%%.*}" -eq 1 ] && [ "$(echo "$v" | cut -d. -f2)" -ge 22 ]; }
 }
 
-# Build dari source langsung di mesin ini (dipakai jika belum ada GitHub Release).
+# Folder script ini, jika dijalankan dari hasil `git clone` (kosong jika lewat `curl | bash`).
+SCRIPT_DIR=""
+if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
+
+# Build dari source langsung di mesin ini.
+# $1 = folder source server lokal (opsional); tanpa itu source didownload dari GitHub.
 build_from_source() {
   say "Build dari source (beberapa menit)..."
   WORK="$(mktemp -d /var/tmp/casa-files-build.XXXXXX)"
-  curl -fsSL "https://codeload.github.com/$REPO/tar.gz/refs/heads/$BRANCH" |
-    tar -xz -C "$WORK" --strip-components=1 || die "gagal download source code"
+  if [ -n "${1:-}" ]; then
+    mkdir -p "$WORK/server" && cp -r "$1"/. "$WORK/server/"
+  else
+    local tarball="$WORK/source.tar.gz"
+    curl -fsSL -o "$tarball" "https://codeload.github.com/$REPO/tar.gz/refs/heads/$BRANCH" ||
+      die "gagal download source code (repo private?). Jalankan dari hasil git clone: sudo ./server/install.sh"
+    tar -xzf "$tarball" -C "$WORK" --strip-components=1 || die "arsip source rusak"
+  fi
 
   local go_bin=""
   if command -v go >/dev/null && go_ok "$(command -v go)"; then
@@ -71,6 +84,9 @@ build_from_source() {
 if [ -n "${1:-}" ]; then
   say "Memakai binary lokal: $1"
   cp "$1" "$TMP"
+elif [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/main.go" ] && [ -f "$SCRIPT_DIR/go.mod" ]; then
+  say "Memakai source lokal: $SCRIPT_DIR"
+  build_from_source "$SCRIPT_DIR"
 else
   URL="https://github.com/$REPO/releases/latest/download/casa-files-server-linux-$ARCH"
   say "Download $URL"
