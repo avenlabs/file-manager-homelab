@@ -1,4 +1,5 @@
 import { File, UploadTask, UploadType } from 'expo-file-system';
+import type { FlagColor } from './theme';
 
 export type Entry = {
   name: string;
@@ -7,6 +8,7 @@ export type Entry = {
   size: number;
   modTime: string;
   mime?: string;
+  flag?: FlagColor;
 };
 
 export type Session = { baseUrl: string; token: string };
@@ -86,8 +88,12 @@ export async function login(baseUrl: string, password: string): Promise<Session>
   return { baseUrl, token: data.token };
 }
 
-export const listDir = (s: Session, path: string) =>
-  request<{ path: string; entries: Entry[] }>(s, 'GET', `/list?path=${encodeURIComponent(path)}`);
+export const listDir = (s: Session, path: string, hidden = false) =>
+  request<{ path: string; entries: Entry[] }>(
+    s,
+    'GET',
+    `/list?path=${encodeURIComponent(path)}${hidden ? '&hidden=1' : ''}`,
+  );
 
 export const storageInfo = (s: Session) => request<StorageInfo>(s, 'GET', '/storage');
 
@@ -95,6 +101,54 @@ export const mkdir = (s: Session, path: string) => request(s, 'POST', '/mkdir', 
 
 export const rename = (s: Session, from: string, to: string) =>
   request(s, 'POST', '/rename', { from, to });
+
+export type BatchResult = { from: string; to?: string; error?: string };
+
+/** Jalankan operasi batch; lempar error berisi ringkasan jika ada item yang gagal. */
+async function batch(s: Session, path: string, body: unknown): Promise<BatchResult[]> {
+  const { results } = await request<{ results: BatchResult[] }>(s, 'POST', path, body);
+  const failed = results.filter((r) => r.error);
+  if (failed.length) {
+    const name = (p: string) => p.split('/').pop();
+    throw new Error(failed.map((f) => `${name(f.from)}: ${f.error}`).join('\n'));
+  }
+  return results;
+}
+
+export const copyItems = (s: Session, paths: string[], dest: string) => batch(s, '/copy', { paths, dest });
+export const moveItems = (s: Session, paths: string[], dest: string) => batch(s, '/move', { paths, dest });
+export const deleteItems = (s: Session, paths: string[]) => batch(s, '/delete', { paths });
+export const setFlag = (s: Session, paths: string[], color: FlagColor | null) =>
+  request(s, 'POST', '/flag', { paths, color: color ?? '' });
+
+export type SizeCount = { key: string; size: number; count: number };
+
+export type Stats = {
+  computedAt: string;
+  durationMs: number;
+  disk: StorageInfo;
+  location: { root: string; mountPoint?: string; fsType?: string; device?: string };
+  server: {
+    hostname: string;
+    os: string;
+    arch: string;
+    version: string;
+    goVersion: string;
+    uptimeSeconds: number;
+    hostUptimeSeconds?: number;
+  };
+  files: number;
+  folders: number;
+  totalSize: number;
+  flagged: number;
+  categories: SizeCount[];
+  extensions: SizeCount[];
+  largest: Entry[];
+  recent: Entry[];
+};
+
+export const getStats = (s: Session, refresh = false) =>
+  request<Stats>(s, 'GET', `/stats${refresh ? '?refresh=1' : ''}`);
 
 export const remove = (s: Session, path: string) =>
   request(s, 'DELETE', `/delete?path=${encodeURIComponent(path)}`);
@@ -147,8 +201,15 @@ export function formatBytes(n: number): string {
   return `${v.toFixed(v >= 100 ? 0 : 1)} ${units[i]}`;
 }
 
-export const isImage = (e: Entry) => !!e.mime?.startsWith('image/') || /\.(heic|heif|webp)$/i.test(e.name);
-export const isVideo = (e: Entry) => !!e.mime?.startsWith('video/') || /\.(mov|mkv|m4v)$/i.test(e.name);
+
+export function formatDuration(seconds: number): string {
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (d) return `${d} hari ${h} jam`;
+  if (h) return `${h} jam ${m} mnt`;
+  return `${m} mnt`;
+}
 
 export function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' });

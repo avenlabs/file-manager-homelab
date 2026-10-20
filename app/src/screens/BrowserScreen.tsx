@@ -1,98 +1,124 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { createElement, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   BackHandler,
   FlatList,
   Pressable,
   RefreshControl,
   StyleSheet,
+  Text,
   useWindowDimensions,
   View,
 } from 'react-native';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
-import { LinearGradient } from 'expo-linear-gradient';
+import { useFocusEffect } from 'expo-router';
+import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import {
-  Archive,
   Camera,
+  Check,
   ChevronLeft,
+  ChevronRight,
+  ClipboardPaste,
   CloudUpload,
+  Copy,
   Ellipsis,
-  FileText,
-  Film,
+  ExternalLink,
+  FileUp,
+  Flag,
   Folder,
-  FolderOpen,
+  FolderInput,
   FolderPlus,
-  HardDrive,
   Images,
   LayoutGrid,
   List,
-  LogOut,
-  Music,
   Pencil,
-  Play,
   Plus,
-  Settings2,
+  Search,
   Share2,
   Trash2,
   X,
 } from 'lucide-react-native';
 import {
   ApiError,
+  copyItems,
+  deleteItems,
   fileUrl,
   formatBytes,
   formatDate,
-  isImage,
-  isVideo,
   joinPath,
   listDir,
   mkdir,
+  moveItems,
   parentPath,
-  remove,
   rename,
-  storageInfo,
+  setFlag,
   type Entry,
   type Session,
-  type StorageInfo,
 } from '../api';
-import { radius, useTheme } from '../theme';
-import { storage } from '../storage';
+import { categoryOf, extLabel, iconFor, previewKind, type Category } from '../fileTypes';
+import { flagColors, flagLabels, font, radius, useTheme, type FlagColor } from '../theme';
 import { useUploads, type PickedFile } from '../useUploads';
-import { ActionSheet, PromptSheet, type SheetAction } from '../components/Sheets';
-import PreviewModal, { shareEntry } from '../components/PreviewModal';
-import { Button, Card, GradientBar, IconButton, IconTile, Txt, type Icon } from '../components/ui';
+import { ActionSheet, ConfirmSheet, FlagSheet, PromptSheet, type SheetAction } from '../components/Sheets';
+import PreviewModal, { openWithApp, shareEntry } from '../components/PreviewModal';
+import { Screen } from '../components/Screen';
+import { Bar, Button, Hatch, IconButton, Input, Segmented, Txt } from '../components/ui';
 
-const VIEW_KEY = 'casa-files-view';
+export type ViewMode = 'list' | 'grid';
+type Filter = 'all' | 'image' | 'video' | 'document';
+type Clipboard = { mode: 'copy' | 'move'; paths: string[]; from: string };
+
 const GRID_COLS = 3;
-const GRID_GAP = 8;
-const PAD = 16;
+const GRID_GAP = 10;
+const PAD = 14;
 
-const baseName = (uri: string) => decodeURIComponent(uri.split('/').pop() || `file-${Date.now()}`);
+const FILTERS: { value: Filter; label: string }[] = [
+  { value: 'all', label: 'Semua' },
+  { value: 'image', label: 'Foto' },
+  { value: 'video', label: 'Video' },
+  { value: 'document', label: 'Dokumen' },
+];
 
-function iconFor(e: Entry): Icon {
-  if (e.isDir) return Folder;
-  if (isImage(e)) return Images;
-  if (isVideo(e)) return Film;
-  if (e.mime?.startsWith('audio/')) return Music;
-  if (/\.(zip|tar|gz|7z|rar)$/i.test(e.name)) return Archive;
-  return FileText;
-}
+const baseName = (p: string) => decodeURIComponent(p.split('/').pop() || `file-${Date.now()}`);
+const tap = () => Haptics.selectionAsync().catch(() => {});
 
-export default function BrowserScreen({ session, onLogout }: { session: Session; onLogout: () => void }) {
+export default function BrowserScreen({
+  session,
+  view,
+  showHidden,
+  onChangeView,
+  onLogout,
+  onOpenMenu,
+}: {
+  session: Session;
+  view: ViewMode;
+  showHidden: boolean;
+  onChangeView: (v: ViewMode) => void;
+  onLogout: () => void;
+  onOpenMenu: () => void;
+}) {
   const t = useTheme();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
+
   const [path, setPath] = useState('/');
   const [entries, setEntries] = useState<Entry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [info, setInfo] = useState<StorageInfo | null>(null);
-  const [view, setView] = useState<'list' | 'grid'>('list');
+  const [filter, setFilter] = useState<Filter>('all');
+  const [flagFilter, setFlagFilter] = useState<FlagColor | null>(null);
+  const [search, setSearch] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Set<string> | null>(null);
+  const [clipboard, setClipboard] = useState<Clipboard | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+
   const [preview, setPreview] = useState<Entry | null>(null);
   const [sheet, setSheet] = useState<{ title?: string; actions: SheetAction[] } | null>(null);
+  const [flagTarget, setFlagTarget] = useState<string[] | null>(null);
+  const [confirm, setConfirm] = useState<{ title: string; message: string; run: () => void } | null>(null);
   const [prompt, setPrompt] = useState<{
     title: string;
     description?: string;
@@ -102,69 +128,177 @@ export default function BrowserScreen({ session, onLogout }: { session: Session;
   } | null>(null);
 
   const pathRef = useRef(path);
-  pathRef.current = path;
+  useEffect(() => {
+    pathRef.current = path;
+  }, [path]);
 
-  const load = useCallback(
-    async (p: string) => {
-      setLoading(true);
-      setError(null);
-      try {
-        const res = await listDir(session, p);
-        if (pathRef.current === p) setEntries(res.entries);
-      } catch (e: any) {
-        if (e instanceof ApiError && e.status === 401) return onLogout();
-        setError(e?.message ?? 'Gagal memuat');
-      } finally {
-        setLoading(false);
-      }
-    },
-    [session, onLogout],
+  // Ambil isi folder; hasil diabaikan jika user sudah pindah folder.
+  const fetchDir = useCallback(
+    (p: string) =>
+      listDir(session, p, showHidden)
+        .then((res) => {
+          if (pathRef.current !== p) return;
+          setEntries(res.entries);
+          setError(null);
+        })
+        .catch((e: any) => {
+          if (e instanceof ApiError && e.status === 401) return onLogout();
+          setError(e?.message ?? 'Gagal memuat');
+        })
+        .finally(() => setLoading(false)),
+    [session, onLogout, showHidden],
   );
 
-  const refreshStorage = useCallback(() => {
-    storageInfo(session).then(setInfo).catch(() => {});
-  }, [session]);
-
   useEffect(() => {
-    load(path);
-  }, [path, load]);
-  useEffect(refreshStorage, [refreshStorage]);
-  useEffect(() => {
-    storage.get(VIEW_KEY).then((v) => (v === 'grid' || v === 'list') && setView(v)).catch(() => {});
-  }, []);
+    fetchDir(path);
+  }, [path, fetchDir]);
 
-  const toggleView = () => {
-    const next = view === 'list' ? 'grid' : 'list';
-    setView(next);
-    storage.set(VIEW_KEY, next).catch(() => {});
+  const load = (p: string) => {
+    setLoading(true);
+    fetchDir(p);
   };
 
-  // Tombol back Android: naik satu folder.
+  const navigate = (p: string) => {
+    setSelected(null);
+    setFlagFilter(null);
+    setSearch(null);
+    setLoading(true);
+    setEntries([]);
+    setPath(p);
+  };
+
+  // Tombol back Android: keluar mode pilih / pencarian, lalu naik satu folder.
+  const backRef = useRef<() => boolean>(() => false);
   useEffect(() => {
-    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      if (pathRef.current === '/') return false;
-      setPath(parentPath(pathRef.current));
+    backRef.current = () => {
+      if (selected) return setSelected(null), true;
+      if (search !== null) return setSearch(null), true;
+      if (path === '/') return false;
+      navigate(parentPath(path));
       return true;
-    });
-    return () => sub.remove();
-  }, []);
+    };
+  });
+  // Hanya aktif saat layar ini fokus, agar tidak mencegat tombol back di layar lain.
+  useFocusEffect(
+    useCallback(() => {
+      const sub = BackHandler.addEventListener('hardwareBackPress', () => backRef.current());
+      return () => sub.remove();
+    }, []),
+  );
+
+  useEffect(() => {
+    if (!toast) return;
+    const id = setTimeout(() => setToast(null), 2600);
+    return () => clearTimeout(id);
+  }, [toast]);
 
   const onUploadDone = useCallback(
     (destDir: string) => {
-      if (destDir === pathRef.current) load(destDir);
-      refreshStorage();
+      if (destDir === pathRef.current) fetchDir(destDir);
     },
-    [load, refreshStorage],
+    [fetchDir],
   );
   const uploads = useUploads(session, onUploadDone);
+  const activeUploads = uploads.items.filter((i) => i.status === 'uploading' || i.status === 'queued').length;
+
+  // ---------- data turunan ----------
+
+  const visible = useMemo(() => {
+    const q = search?.trim().toLowerCase();
+    return entries.filter((e) => {
+      if (q && !e.name.toLowerCase().includes(q)) return false;
+      if (flagFilter && e.flag !== flagFilter) return false;
+      if (filter !== 'all' && (e.isDir || categoryOf(e) !== (filter as Category))) return false;
+      return true;
+    });
+  }, [entries, search, flagFilter, filter]);
+
+  const flagCounts = useMemo(() => {
+    const m = new Map<FlagColor, number>();
+    for (const e of entries) if (e.flag) m.set(e.flag, (m.get(e.flag) ?? 0) + 1);
+    return m;
+  }, [entries]);
+
+  const selectedEntries = useMemo(
+    () => (selected ? entries.filter((e) => selected.has(e.path)) : []),
+    [entries, selected],
+  );
+  const allSelected = !!selected && visible.length > 0 && visible.every((e) => selected.has(e.path));
 
   // ---------- aksi ----------
+
+  const run = async (label: string, fn: () => Promise<unknown>, done?: string) => {
+    setBusy(label);
+    try {
+      await fn();
+      if (done) setToast(done);
+    } catch (e: any) {
+      setToast(e?.message ?? String(e));
+    } finally {
+      setBusy(null);
+      load(pathRef.current);
+    }
+  };
+
+  const toggleSelect = (e: Entry) => {
+    tap();
+    setSelected((prev) => {
+      const next = new Set(prev ?? []);
+      if (next.has(e.path)) next.delete(e.path);
+      else next.add(e.path);
+      return next;
+    });
+  };
+
+  const startSelect = (e?: Entry) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+    setSelected(new Set(e ? [e.path] : []));
+  };
+
+  const toggleSelectAll = () => {
+    tap();
+    setSelected(allSelected ? new Set() : new Set(visible.map((e) => e.path)));
+  };
+
+  const toClipboard = (mode: Clipboard['mode'], paths: string[]) => {
+    setClipboard({ mode, paths, from: path });
+    setSelected(null);
+    setToast(`${paths.length} item siap ${mode === 'copy' ? 'disalin' : 'dipindah'}. Buka folder tujuan lalu tempel.`);
+  };
+
+  const paste = () => {
+    if (!clipboard) return;
+    const { mode, paths } = clipboard;
+    setClipboard(null);
+    run(
+      'paste',
+      () => (mode === 'copy' ? copyItems(session, paths, path) : moveItems(session, paths, path)),
+      `${paths.length} item ${mode === 'copy' ? 'disalin' : 'dipindah'} ke ${path === '/' ? 'Storage' : baseName(path)}`,
+    );
+  };
+
+  const askDelete = (paths: string[]) =>
+    setConfirm({
+      title: `Hapus ${paths.length} item?`,
+      message: 'File dan folder (beserta isinya) akan dihapus permanen dari server. Tidak bisa dibatalkan.',
+      run: () => {
+        setSelected(null);
+        run('delete', () => deleteItems(session, paths), `${paths.length} item dihapus`);
+      },
+    });
+
+  const applyFlag = (color: FlagColor | null) => {
+    const paths = flagTarget ?? [];
+    setFlagTarget(null);
+    setSelected(null);
+    run('flag', () => setFlag(session, paths, color), color ? `Flag ${flagLabels[color].toLowerCase()} dipasang` : 'Flag dihapus');
+  };
 
   const pickMedia = async (fromCamera: boolean) => {
     const perm = fromCamera
       ? await ImagePicker.requestCameraPermissionsAsync()
       : await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!perm.granted) return Alert.alert('Izin ditolak', 'Aktifkan izin di Settings untuk melanjutkan.');
+    if (!perm.granted) return setToast('Izin ditolak. Aktifkan izin di Settings.');
     const opts: ImagePicker.ImagePickerOptions = {
       mediaTypes: ['images', 'videos'],
       quality: 1,
@@ -193,45 +327,41 @@ export default function BrowserScreen({ session, onLogout }: { session: Session;
     );
   };
 
-  const runSafe = async (fn: () => Promise<unknown>) => {
-    try {
-      await fn();
-      load(path);
-      refreshStorage();
-    } catch (e: any) {
-      Alert.alert('Gagal', e?.message ?? String(e));
-    }
-  };
+  const newFolder = () =>
+    setPrompt({
+      title: 'Folder baru',
+      description: `Dibuat di ${path === '/' ? 'Storage' : path}`,
+      confirm: 'Buat',
+      run: (name) => mkdir(session, joinPath(path, name)),
+    });
 
   const openAddMenu = () =>
     setSheet({
-      title: `Upload ke ${path}`,
+      title: `Tambah ke ${path === '/' ? 'Storage' : baseName(path)}`,
       actions: [
         { label: 'Foto & Video', description: 'Pilih banyak sekaligus, kualitas asli', icon: Images, onPress: () => pickMedia(false) },
         { label: 'Kamera', description: 'Ambil foto atau video lalu upload', icon: Camera, onPress: () => pickMedia(true) },
-        { label: 'File', description: 'Dokumen, arsip, atau file apa pun', icon: FileText, onPress: pickDocuments },
-        {
-          label: 'Folder baru',
-          description: 'Buat folder di lokasi ini',
-          icon: FolderPlus,
-          onPress: () =>
-            setPrompt({
-              title: 'Folder baru',
-              description: `Dibuat di ${path}`,
-              confirm: 'Buat',
-              run: (name) => mkdir(session, joinPath(path, name)),
-            }),
-        },
+        { label: 'File', description: 'Dokumen, arsip, atau file apa pun', icon: FileUp, onPress: pickDocuments },
+        { label: 'Folder baru', description: 'Buat folder di lokasi ini', icon: FolderPlus, onPress: newFolder },
       ],
     });
 
-  const openEntryMenu = (e: Entry) =>
+  const openEntryMenu = (e: Entry) => {
+    const kind = previewKind(e);
     setSheet({
       title: e.name,
       actions: [
         ...(!e.isDir
-          ? [{ label: 'Bagikan / Simpan', description: 'Simpan ke Photos atau app lain', icon: Share2, onPress: () => runSafe(() => shareEntry(session, e)) }]
+          ? [
+              ...(kind === 'office' || kind === 'other'
+                ? [{ label: kind === 'office' ? 'Buka di Google Drive' : 'Buka dengan…', icon: ExternalLink, onPress: () => run('open', () => openWithApp(session, e)) }]
+                : []),
+              { label: 'Bagikan / Simpan', icon: Share2, onPress: () => run('share', () => shareEntry(session, e)) },
+            ]
           : []),
+        { label: 'Salin', icon: Copy, onPress: () => toClipboard('copy', [e.path]) },
+        { label: 'Pindah', icon: FolderInput, onPress: () => toClipboard('move', [e.path]) },
+        { label: 'Beri flag', icon: Flag, onPress: () => setFlagTarget([e.path]) },
         {
           label: 'Ganti nama',
           icon: Pencil,
@@ -243,249 +373,448 @@ export default function BrowserScreen({ session, onLogout }: { session: Session;
               run: (name) => rename(session, e.path, joinPath(parentPath(e.path), name)),
             }),
         },
-        {
-          label: 'Hapus',
-          description: 'Tidak bisa dibatalkan',
-          icon: Trash2,
-          destructive: true,
-          onPress: () =>
-            Alert.alert('Hapus?', `"${e.name}" akan dihapus permanen${e.isDir ? ' beserta isinya' : ''}.`, [
-              { text: 'Batal', style: 'cancel' },
-              { text: 'Hapus', style: 'destructive', onPress: () => runSafe(() => remove(session, e.path)) },
-            ]),
-        },
+        { label: 'Hapus', icon: Trash2, destructive: true, onPress: () => askDelete([e.path]) },
       ],
     });
+  };
 
-  const openSettings = () =>
-    setSheet({
-      title: session.baseUrl.replace(/^https?:\/\//, ''),
-      actions: [{ label: 'Keluar', description: 'Putuskan dari server ini', icon: LogOut, destructive: true, onPress: onLogout }],
-    });
-
-  const open = (e: Entry) => (e.isDir ? setPath(e.path) : setPreview(e));
+  const onItemPress = (e: Entry) => {
+    if (selected) return toggleSelect(e);
+    if (e.isDir) return navigate(e.path);
+    setPreview(e);
+  };
+  const onItemLongPress = (e: Entry) => (selected ? toggleSelect(e) : startSelect(e));
 
   // ---------- render ----------
 
-  const tileSize = (width - PAD * 2 - GRID_GAP * (GRID_COLS - 1)) / GRID_COLS;
-  const folders = entries.filter((e) => e.isDir).length;
-  const files = entries.length - folders;
-  const segments = path.split('/').filter(Boolean);
-  const title = segments.length ? segments[segments.length - 1] : 'Storage';
+  const tileSize = (width - PAD * 2 - 16 - GRID_GAP * (GRID_COLS - 1)) / GRID_COLS;
+  const folderName = path === '/' ? 'Storage' : baseName(path);
+  const parentName = path === '/' ? null : parentPath(path) === '/' ? 'Storage' : baseName(parentPath(path));
 
-  const renderRow = ({ item }: { item: Entry }) => (
-    <Pressable
-      style={({ pressed }) => [styles.row, pressed && { backgroundColor: t.muted }]}
-      onPress={() => open(item)}
-      onLongPress={() => openEntryMenu(item)}
-    >
-      {isImage(item) ? (
-        <Thumb entry={item} session={session} size={44} />
-      ) : (
-        <IconTile icon={iconFor(item)} size={44} />
-      )}
-      <View style={{ flex: 1 }}>
-        <Txt variant="body" numberOfLines={1}>
-          {item.name}
-        </Txt>
-        <Txt variant="mono" style={{ marginTop: 3 }}>
-          {item.isDir ? 'folder' : formatBytes(item.size)} · {formatDate(item.modTime)}
-        </Txt>
-      </View>
-      <IconButton icon={Ellipsis} variant="ghost" size={32} color={t.mutedText} onPress={() => openEntryMenu(item)} />
-    </Pressable>
-  );
+  const renderItem = ({ item }: { item: Entry }) => {
+    const isSel = !!selected?.has(item.path);
+    return view === 'grid' ? (
+      <GridItem
+        entry={item}
+        session={session}
+        size={tileSize}
+        selecting={!!selected}
+        selected={isSel}
+        onPress={onItemPress}
+        onLongPress={onItemLongPress}
+      />
+    ) : (
+      <ListItem
+        entry={item}
+        session={session}
+        selecting={!!selected}
+        selected={isSel}
+        onPress={onItemPress}
+        onLongPress={onItemLongPress}
+        onMore={openEntryMenu}
+      />
+    );
+  };
 
-  const renderTile = ({ item }: { item: Entry }) => (
-    <Pressable
-      style={({ pressed }) => [{ width: tileSize, opacity: pressed ? 0.75 : 1 }]}
-      onPress={() => open(item)}
-      onLongPress={() => openEntryMenu(item)}
-    >
-      {isImage(item) ? (
-        <Thumb entry={item} session={session} size={tileSize} />
-      ) : (
-        <View
-          style={[
-            styles.tile,
-            { width: tileSize, height: tileSize, backgroundColor: t.muted, borderColor: t.border },
-          ]}
-        >
-          {(() => {
-            const I = iconFor(item);
-            return <I size={tileSize * 0.28} color={t.text} strokeWidth={1.4} />;
-          })()}
-          {isVideo(item) && (
-            <View style={[styles.badge, { backgroundColor: t.bg + 'cc', borderColor: t.border }]}>
-              <Play size={10} color={t.text} fill={t.text} />
-              <Txt variant="mono" style={{ fontSize: 10, color: t.text }}>
-                {item.name.split('.').pop()?.toUpperCase()}
-              </Txt>
-            </View>
-          )}
+  const toolbar =
+    search !== null ? (
+      <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+        <View style={{ flex: 1 }}>
+          <Input icon={Search} autoFocus placeholder={`Cari di ${folderName}`} value={search} onChangeText={setSearch} />
         </View>
-      )}
-      <Txt variant="label" numberOfLines={1} style={{ marginTop: 6 }}>
-        {item.name}
-      </Txt>
-      <Txt variant="mono" numberOfLines={1} style={{ fontSize: 11, marginTop: 1 }}>
-        {item.isDir ? 'folder' : formatBytes(item.size)}
-      </Txt>
-    </Pressable>
-  );
-
-  const header = (
-    <View>
-      {info && path === '/' && <StorageCard info={info} />}
-      <View style={styles.sectionHeader}>
-        <Txt variant="caption">
-          {folders} folder · {files} file
-        </Txt>
-        {loading && entries.length > 0 && <ActivityIndicator size="small" color={t.subtleText} />}
+        <IconButton icon={X} variant="dark" onPress={() => setSearch(null)} accessibilityLabel="Tutup pencarian" />
       </View>
-    </View>
-  );
+    ) : (
+      <>
+        <Segmented options={FILTERS} value={filter} onChange={setFilter} />
+        <View style={{ flex: 1 }} />
+        <IconButton icon={Search} variant="plain" color={t.textOnDark} onPress={() => setSearch('')} accessibilityLabel="Cari" />
+      </>
+    );
 
   return (
-    <SafeAreaView edges={['top']} style={{ flex: 1, backgroundColor: t.bg }}>
-      {/* Top bar */}
-      <View style={styles.topBar}>
-        {path !== '/' ? (
-          <IconButton icon={ChevronLeft} onPress={() => setPath(parentPath(path))} />
-        ) : (
-          <LinearGradient colors={t.gradient} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.logoRing}>
-            <View style={[styles.logo, { backgroundColor: t.bg }]}>
-              <HardDrive size={16} color={t.text} strokeWidth={1.75} />
+    <Screen
+      title={path === '/' ? 'Halo!' : folderName}
+      subtitle={path === '/' ? 'Kelola file di homelab kamu:' : `~${path}`}
+      badge={activeUploads}
+      onMenu={onOpenMenu}
+      toolbar={toolbar}
+    >
+      {/* Strip navigasi (seperti strip tanggal di referensi) */}
+      <View style={styles.strip}>
+        {selected ? (
+          <>
+            <IconButton icon={X} size={36} onPress={() => setSelected(null)} accessibilityLabel="Keluar mode pilih" />
+            <View style={styles.stripCenter}>
+              <Txt variant="heading">{selected.size} dipilih</Txt>
+              <Txt variant="caption">{folderName}</Txt>
             </View>
-          </LinearGradient>
+            <Pressable onPress={toggleSelectAll} hitSlop={8} style={[styles.pill, { backgroundColor: t.card }]}>
+              <Txt variant="label">{allSelected ? 'Batal semua' : 'Pilih semua'}</Txt>
+            </Pressable>
+          </>
+        ) : (
+          <>
+            {parentName && (
+              <IconButton
+                icon={ChevronLeft}
+                size={36}
+                onPress={() => navigate(parentPath(path))}
+                accessibilityLabel="Kembali ke folder induk"
+              />
+            )}
+            <View style={{ flex: 1 }}>
+              <Txt variant="caption" numberOfLines={1}>
+                {parentName ? `${parentName} /` : 'Lokasi'}
+              </Txt>
+              <Txt variant="heading" numberOfLines={1}>
+                {visible.length} item{visible.length !== entries.length ? ` dari ${entries.length}` : ''}
+              </Txt>
+            </View>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <Pressable onPress={() => startSelect()} hitSlop={8} style={[styles.pill, { backgroundColor: t.card }]}>
+                <Txt variant="label">Pilih</Txt>
+              </Pressable>
+              <IconButton
+                icon={view === 'list' ? LayoutGrid : List}
+                size={36}
+                onPress={() => onChangeView(view === 'list' ? 'grid' : 'list')}
+                accessibilityLabel="Ganti tampilan"
+              />
+            </View>
+          </>
         )}
-        <View style={{ flex: 1 }} />
-        <IconButton icon={view === 'list' ? LayoutGrid : List} onPress={toggleView} />
-        <IconButton icon={Settings2} onPress={openSettings} />
       </View>
 
-      <View style={{ paddingHorizontal: PAD, paddingTop: 14, paddingBottom: 12 }}>
-        <Txt variant="mono" numberOfLines={1}>
-          ~{path === '/' ? '/' : path}
-        </Txt>
-        <Txt variant="title" numberOfLines={1} style={{ marginTop: 4 }}>
-          {title}
-        </Txt>
-      </View>
-
-      {error ? (
-        <View style={styles.centerBox}>
-          <Txt variant="muted" style={{ color: t.danger, marginBottom: 14 }}>
-            {error}
-          </Txt>
-          <Button label="Coba lagi" variant="outline" onPress={() => load(path)} />
+      {flagCounts.size > 0 && (
+        <View style={styles.flagRow}>
+          <FlagChip label="Semua" active={!flagFilter} onPress={() => setFlagFilter(null)} />
+          {[...flagCounts.entries()].map(([c, n]) => (
+            <FlagChip key={c} color={c} label={String(n)} active={flagFilter === c} onPress={() => setFlagFilter(flagFilter === c ? null : c)} />
+          ))}
         </View>
-      ) : (
-        <FlatList
-          key={view}
-          data={entries}
-          numColumns={view === 'grid' ? GRID_COLS : 1}
-          keyExtractor={(e) => e.path}
-          renderItem={view === 'grid' ? renderTile : renderRow}
-          columnWrapperStyle={view === 'grid' ? { gap: GRID_GAP, paddingHorizontal: PAD } : undefined}
-          ItemSeparatorComponent={
-            view === 'grid'
-              ? () => <View style={{ height: 14 }} />
-              : () => <View style={{ height: StyleSheet.hairlineWidth, backgroundColor: t.border, marginLeft: PAD + 44 + 14 }} />
-          }
-          ListHeaderComponent={header}
-          refreshControl={<RefreshControl tintColor={t.mutedText} refreshing={false} onRefresh={() => load(path)} />}
-          contentContainerStyle={{ paddingBottom: 140 + insets.bottom }}
-          ListEmptyComponent={
-            loading ? (
-              <ActivityIndicator style={{ marginTop: 40 }} color={t.mutedText} />
-            ) : (
-              <View style={[styles.empty, { borderColor: t.border }]}>
-                <IconTile icon={FolderOpen} size={48} color={t.mutedText} />
-                <Txt variant="heading" style={{ marginTop: 14 }}>
-                  Folder kosong
-                </Txt>
-                <Txt variant="muted" style={{ marginTop: 4, textAlign: 'center' }}>
-                  Tap Upload untuk menambah foto, video, atau file.
-                </Txt>
-              </View>
-            )
-          }
-        />
       )}
 
-      {/* Dock bawah: panel upload + tombol upload */}
-      <View style={[styles.dock, { paddingBottom: insets.bottom + 16 }]} pointerEvents="box-none">
-        <UploadPanel uploads={uploads} />
-        <LinearGradient colors={t.gradient} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.fabRing}>
-          <Button label="Upload" icon={Plus} onPress={openAddMenu} style={styles.fab} />
-        </LinearGradient>
+      <View style={[styles.panel, { backgroundColor: t.panel }]}>
+        {error ? (
+          <View style={styles.centerBox}>
+            <Txt variant="muted" style={{ color: t.danger, marginBottom: 14, textAlign: 'center' }}>
+              {error}
+            </Txt>
+            <Button label="Coba lagi" size="sm" onPress={() => load(path)} />
+          </View>
+        ) : (
+          <FlatList
+            key={view}
+            data={visible}
+            numColumns={view === 'grid' ? GRID_COLS : 1}
+            keyExtractor={(e) => e.path}
+            renderItem={renderItem}
+            extraData={selected}
+            columnWrapperStyle={view === 'grid' ? { gap: GRID_GAP } : undefined}
+            ItemSeparatorComponent={() => <View style={{ height: view === 'grid' ? 14 : 8 }} />}
+            refreshControl={<RefreshControl refreshing={false} onRefresh={() => load(path)} tintColor={t.mutedText} />}
+            contentContainerStyle={{ padding: 8, paddingBottom: 170 + insets.bottom }}
+            ListEmptyComponent={
+              loading ? (
+                <ActivityIndicator style={{ marginTop: 40 }} color={t.mutedText} />
+              ) : (
+                <EmptyState filtered={visible.length !== entries.length} onAdd={openAddMenu} />
+              )
+            }
+          />
+        )}
       </View>
 
+      {/* Dock bawah */}
+      <View style={[styles.dock, { paddingBottom: insets.bottom + 14 }]} pointerEvents="box-none">
+        {toast && (
+          <View style={[styles.toast, { backgroundColor: t.bg }]}>
+            <Txt variant="label" dark numberOfLines={3}>
+              {toast}
+            </Txt>
+          </View>
+        )}
+        <UploadPanel uploads={uploads} />
+
+        {selected ? (
+          <View style={[styles.actionBar, { backgroundColor: t.bg }]}>
+            <ActionBtn icon={Copy} label="Salin" disabled={!selected.size} onPress={() => toClipboard('copy', [...selected])} />
+            <ActionBtn icon={FolderInput} label="Pindah" disabled={!selected.size} onPress={() => toClipboard('move', [...selected])} />
+            <ActionBtn icon={Flag} label="Flag" disabled={!selected.size} onPress={() => setFlagTarget([...selected])} />
+            <ActionBtn
+              icon={Share2}
+              label="Bagikan"
+              disabled={selectedEntries.length !== 1 || selectedEntries[0].isDir}
+              onPress={() => run('share', () => shareEntry(session, selectedEntries[0]))}
+            />
+            <ActionBtn icon={Trash2} label="Hapus" danger disabled={!selected.size} onPress={() => askDelete([...selected])} />
+          </View>
+        ) : clipboard ? (
+          <View style={[styles.clipBar, { backgroundColor: t.bg }]}>
+            <View style={{ flex: 1 }}>
+              <Txt variant="label" dark>
+                {clipboard.paths.length} item {clipboard.mode === 'copy' ? 'disalin' : 'akan dipindah'}
+              </Txt>
+              <Txt variant="small" dark numberOfLines={1}>
+                Buka folder tujuan, lalu tempel
+              </Txt>
+            </View>
+            <IconButton icon={X} variant="dark" size={38} onPress={() => setClipboard(null)} accessibilityLabel="Batal" />
+            <Button
+              label="Tempel"
+              icon={ClipboardPaste}
+              size="sm"
+              loading={busy === 'paste'}
+              disabled={clipboard.mode === 'move' && clipboard.from === path}
+              onPress={paste}
+            />
+          </View>
+        ) : (
+          <View style={{ alignSelf: 'flex-end' }}>
+            <Pressable
+              onPress={openAddMenu}
+              accessibilityLabel="Upload atau buat folder"
+              style={({ pressed }) => [styles.fab, { backgroundColor: pressed ? t.primaryPressed : t.primary }]}
+            >
+              <Plus size={28} color={t.primaryText} strokeWidth={2.4} />
+            </Pressable>
+          </View>
+        )}
+      </View>
+
+      {busy && busy !== 'paste' && (
+        <View style={[StyleSheet.absoluteFill, styles.busy]} pointerEvents="none">
+          <ActivityIndicator color={t.primary} size="large" />
+        </View>
+      )}
+
       <ActionSheet title={sheet?.title} actions={sheet?.actions ?? null} onClose={() => setSheet(null)} />
+      <FlagSheet
+        visible={!!flagTarget}
+        count={flagTarget?.length ?? 0}
+        current={(() => {
+          const fl = entries.filter((e) => flagTarget?.includes(e.path)).map((e) => e.flag ?? null);
+          return fl.length && fl.every((f) => f === fl[0]) ? fl[0] : null;
+        })()}
+        onPick={applyFlag}
+        onClose={() => setFlagTarget(null)}
+      />
+      <ConfirmSheet
+        visible={!!confirm}
+        title={confirm?.title ?? ''}
+        message={confirm?.message}
+        confirmLabel="Hapus"
+        destructive
+        onConfirm={() => confirm?.run()}
+        onClose={() => setConfirm(null)}
+      />
       <PromptSheet
         visible={!!prompt}
         title={prompt?.title ?? ''}
         description={prompt?.description}
         initial={prompt?.initial}
+        icon={Folder}
         confirmLabel={prompt?.confirm ?? 'OK'}
         onClose={() => setPrompt(null)}
         onSubmit={(v) => {
-          const run = prompt!.run;
+          const fn = prompt!.run;
           setPrompt(null);
-          runSafe(() => run(v));
+          run('prompt', () => fn(v));
         }}
       />
       <PreviewModal session={session} entry={preview} onClose={() => setPreview(null)} />
-    </SafeAreaView>
+    </Screen>
   );
 }
 
-function Thumb({ entry, session, size }: { entry: Entry; session: Session; size: number }) {
+// ---------- item ----------
+
+type ItemProps = {
+  entry: Entry;
+  session: Session;
+  selecting: boolean;
+  selected: boolean;
+  onPress: (e: Entry) => void;
+  onLongPress: (e: Entry) => void;
+};
+
+function Thumb({ entry, session, size, rounded }: { entry: Entry; session: Session; size: number; rounded: number }) {
   const t = useTheme();
+  if (previewKind(entry) === 'image') {
+    return (
+      <Image
+        source={{ uri: fileUrl(session, entry.path) }}
+        style={{ width: size, height: size, borderRadius: rounded, backgroundColor: t.panel }}
+        contentFit="cover"
+        cachePolicy="disk"
+        recyclingKey={entry.path}
+        transition={150}
+      />
+    );
+  }
+  const folder = entry.isDir;
   return (
-    <Image
-      source={{ uri: fileUrl(session, entry.path) }}
+    <View
       style={{
         width: size,
         height: size,
-        borderRadius: size > 60 ? radius.lg : radius.md + 2,
-        backgroundColor: t.muted,
-        borderWidth: StyleSheet.hairlineWidth * 2,
-        borderColor: t.border,
+        borderRadius: rounded,
+        backgroundColor: folder ? t.primary : t.bg,
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 2,
       }}
-      contentFit="cover"
-      cachePolicy="disk"
-      recyclingKey={entry.path}
-      transition={150}
-    />
+    >
+      {createElement(iconFor(entry), {
+        size: size * (folder ? 0.42 : 0.36),
+        color: folder ? t.primaryText : t.textOnDark,
+        strokeWidth: 1.9,
+      })}
+      {!folder && (
+        <Text style={{ color: t.mutedOnDark, fontFamily: font.bold, fontSize: Math.max(8, size * 0.15) }} numberOfLines={1}>
+          {extLabel(entry)}
+        </Text>
+      )}
+    </View>
   );
 }
 
-function StorageCard({ info }: { info: StorageInfo }) {
+function SelectMark({ selected }: { selected: boolean }) {
   const t = useTheme();
-  const pct = info.total ? info.used / info.total : 0;
   return (
-    <Card style={{ marginHorizontal: PAD, marginBottom: 8, padding: 14 }}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-        <HardDrive size={15} color={t.mutedText} strokeWidth={1.75} />
-        <Txt variant="label" style={{ flex: 1 }}>
-          Penyimpanan
-        </Txt>
-        <Txt variant="mono" style={{ color: t.text }}>
-          {Math.round(pct * 100)}%
+    <View
+      style={[
+        styles.check,
+        selected ? { backgroundColor: t.primary, borderColor: t.primary } : { borderColor: t.stripe, backgroundColor: t.card },
+      ]}
+    >
+      {selected && <Check size={14} color={t.primaryText} strokeWidth={3} />}
+    </View>
+  );
+}
+
+const ListItem = memo(function ListItem({
+  entry,
+  session,
+  selecting,
+  selected,
+  onPress,
+  onLongPress,
+  onMore,
+}: ItemProps & { onMore: (e: Entry) => void }) {
+  const t = useTheme();
+  return (
+    <Pressable
+      onPress={() => onPress(entry)}
+      onLongPress={() => onLongPress(entry)}
+      delayLongPress={350}
+      style={({ pressed }) => [
+        styles.row,
+        { backgroundColor: selected ? '#fdebdc' : t.card, borderColor: selected ? t.primary : 'transparent', opacity: pressed ? 0.85 : 1 },
+      ]}
+    >
+      <Thumb entry={entry} session={session} size={50} rounded={16} />
+      <View style={{ flex: 1 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          {entry.flag && <View style={[styles.flagDot, { backgroundColor: flagColors[entry.flag] }]} />}
+          <Txt variant="body" numberOfLines={1} style={{ flexShrink: 1 }}>
+            {entry.name}
+          </Txt>
+        </View>
+        <Txt variant="small" numberOfLines={1} style={{ marginTop: 3 }}>
+          {entry.isDir ? 'Folder' : `${extLabel(entry)} · ${formatBytes(entry.size)}`} · {formatDate(entry.modTime)}
         </Txt>
       </View>
-      <View style={{ marginVertical: 12 }}>
-        <GradientBar value={pct} height={6} />
+      {selecting ? (
+        <SelectMark selected={selected} />
+      ) : entry.isDir ? (
+        <ChevronRight size={20} color={t.mutedText} strokeWidth={2.2} />
+      ) : (
+        <IconButton icon={Ellipsis} variant="plain" size={34} color={t.mutedText} onPress={() => onMore(entry)} accessibilityLabel="Aksi lain" />
+      )}
+    </Pressable>
+  );
+});
+
+const GridItem = memo(function GridItem({ entry, session, size, selecting, selected, onPress, onLongPress }: ItemProps & { size: number }) {
+  const t = useTheme();
+  return (
+    <Pressable
+      onPress={() => onPress(entry)}
+      onLongPress={() => onLongPress(entry)}
+      delayLongPress={350}
+      style={({ pressed }) => [{ width: size, opacity: pressed ? 0.8 : 1 }]}
+    >
+      <View style={{ borderRadius: 20, borderWidth: 2.5, borderColor: selected ? t.primary : 'transparent', padding: 0 }}>
+        <Thumb entry={entry} session={session} size={size - 5} rounded={17} />
+        {entry.flag && <View style={[styles.flagCorner, { backgroundColor: flagColors[entry.flag], borderColor: t.panel }]} />}
+        {selecting && (
+          <View style={{ position: 'absolute', top: 6, right: 6 }}>
+            <SelectMark selected={selected} />
+          </View>
+        )}
       </View>
-      <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-        <Txt variant="mono">
-          {formatBytes(info.used)} / {formatBytes(info.total)}
-        </Txt>
-        <Txt variant="mono">{formatBytes(info.free)} bebas</Txt>
-      </View>
-    </Card>
+      <Txt variant="label" numberOfLines={1} style={{ marginTop: 6, paddingHorizontal: 2 }}>
+        {entry.name}
+      </Txt>
+      <Txt variant="small" numberOfLines={1} style={{ fontSize: 11, paddingHorizontal: 2 }}>
+        {entry.isDir ? 'Folder' : formatBytes(entry.size)}
+      </Txt>
+    </Pressable>
+  );
+});
+
+// ---------- bagian kecil ----------
+
+function FlagChip({ color, label, active, onPress }: { color?: FlagColor; label: string; active: boolean; onPress: () => void }) {
+  const t = useTheme();
+  return (
+    <Pressable
+      onPress={onPress}
+      style={[styles.chip, { backgroundColor: active ? t.bg : t.card }]}
+      accessibilityLabel={color ? `Filter flag ${flagLabels[color]}` : 'Semua flag'}
+    >
+      {color && <View style={[styles.flagDot, { backgroundColor: flagColors[color], width: 10, height: 10 }]} />}
+      <Text style={{ fontFamily: font.bold, fontSize: 12.5, color: active ? t.textOnDark : t.text }}>{label}</Text>
+    </Pressable>
+  );
+}
+
+function EmptyState({ filtered, onAdd }: { filtered: boolean; onAdd: () => void }) {
+  const t = useTheme();
+  return (
+    <View style={{ gap: 8 }}>
+      {[0, 1, 2, 3].map((i) => (
+        <Hatch key={i} bg={t.panel} style={{ height: 46, alignItems: 'center', justifyContent: 'center' }}>
+          {i === 1 && <Txt variant="small">{filtered ? 'Tidak ada yang cocok' : 'Folder kosong'}</Txt>}
+        </Hatch>
+      ))}
+      {!filtered && <Button label="Upload file" icon={Plus} size="sm" onPress={onAdd} style={{ alignSelf: 'center', marginTop: 10 }} />}
+    </View>
+  );
+}
+
+function ActionBtn({
+  icon: I,
+  label,
+  onPress,
+  disabled,
+  danger,
+}: {
+  icon: typeof Copy;
+  label: string;
+  onPress: () => void;
+  disabled?: boolean;
+  danger?: boolean;
+}) {
+  const t = useTheme();
+  const color = danger ? '#ff8a7a' : t.textOnDark;
+  return (
+    <Pressable onPress={onPress} disabled={disabled} style={({ pressed }) => [styles.actionBtn, { opacity: disabled ? 0.35 : pressed ? 0.6 : 1 }]}>
+      <I size={21} color={color} strokeWidth={2} />
+      <Text style={{ color, fontFamily: font.semibold, fontSize: 11 }}>{label}</Text>
+    </Pressable>
   );
 }
 
@@ -501,97 +830,70 @@ function UploadPanel({ uploads }: { uploads: ReturnType<typeof useUploads> }) {
   const doneCount = items.length - running.length;
 
   return (
-    <Card style={{ padding: 14, marginBottom: 12, width: '100%' }}>
+    <View style={[styles.upload, { backgroundColor: t.card }]}>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-        <IconTile icon={CloudUpload} size={38} />
+        <View style={[styles.uploadIcon, { backgroundColor: t.primary }]}>
+          <CloudUpload size={20} color={t.primaryText} />
+        </View>
         <View style={{ flex: 1 }}>
           <Txt variant="label">
             {running.length > 0
               ? `Mengupload ${Math.min(doneCount + 1, items.length)} dari ${items.length}`
               : `Upload selesai${failed.length ? ` · ${failed.length} gagal` : ''}`}
           </Txt>
-          <Txt variant="mono" numberOfLines={1} style={{ marginTop: 2 }}>
-            {current
-              ? `${current.name}`
-              : failed[0]
-                ? `${failed[0].name}: ${failed[0].error}`
-                : `${formatBytes(sent)} terkirim`}
+          <Txt variant="small" numberOfLines={1} style={{ marginTop: 2 }}>
+            {current ? current.name : failed[0] ? `${failed[0].name}: ${failed[0].error}` : `${formatBytes(sent)} terkirim`}
           </Txt>
         </View>
         <IconButton
           icon={X}
-          variant="ghost"
+          variant="plain"
           size={32}
           color={t.mutedText}
           onPress={() => (running.length > 0 ? running.forEach((i) => cancel(i.id)) : clearFinished())}
+          accessibilityLabel={running.length > 0 ? 'Batalkan upload' : 'Tutup'}
         />
       </View>
       <View style={{ marginTop: 12 }}>
-        <GradientBar value={total ? sent / total : 0} />
+        <Bar value={total ? sent / total : 0} />
       </View>
-      <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 6 }}>
-        <Txt variant="mono" style={{ fontSize: 11 }}>
-          {formatBytes(sent)} / {formatBytes(total)}
-        </Txt>
-        <Txt variant="mono" style={{ fontSize: 11 }}>
-          {total ? Math.round((sent / total) * 100) : 0}%
-        </Txt>
-      </View>
-    </Card>
+      <Txt variant="small" style={{ marginTop: 6, fontSize: 11 }}>
+        {formatBytes(sent)} / {formatBytes(total)} · {total ? Math.round((sent / total) * 100) : 0}%
+      </Txt>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  topBar: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: PAD, paddingTop: 6 },
-  logoRing: { width: 36, height: 36, borderRadius: radius.md + 2, padding: 1.25 },
-  logo: { flex: 1, borderRadius: radius.md + 1, alignItems: 'center', justifyContent: 'center' },
-  sectionHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: PAD,
-    paddingTop: 16,
-    paddingBottom: 10,
-  },
-  row: { flexDirection: 'row', alignItems: 'center', gap: 14, paddingHorizontal: PAD, paddingVertical: 10 },
-  tile: {
-    borderRadius: radius.lg,
-    borderWidth: StyleSheet.hairlineWidth * 2,
+  strip: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: PAD, paddingTop: 16, paddingBottom: 12, gap: 8 },
+  stripCenter: { flex: 1, alignItems: 'center' },
+  pill: { height: 36, paddingHorizontal: 14, borderRadius: radius.md, justifyContent: 'center' },
+  flagRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, paddingHorizontal: PAD, paddingBottom: 10 },
+  chip: { flexDirection: 'row', alignItems: 'center', gap: 6, height: 30, paddingHorizontal: 12, borderRadius: radius.full },
+  panel: { flex: 1, marginHorizontal: 8, borderTopLeftRadius: radius.xl, borderTopRightRadius: radius.xl, overflow: 'hidden' },
+  row: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 10, paddingRight: 12, borderRadius: radius.lg, borderWidth: 2 },
+  flagDot: { width: 9, height: 9, borderRadius: 5 },
+  flagCorner: { position: 'absolute', left: 7, top: 7, width: 14, height: 14, borderRadius: 7, borderWidth: 2.5 },
+  check: { width: 24, height: 24, borderRadius: 12, borderWidth: 2, alignItems: 'center', justifyContent: 'center' },
+  centerBox: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
+  dock: { position: 'absolute', left: PAD, right: PAD, bottom: 0, gap: 10 },
+  toast: { alignSelf: 'center', paddingHorizontal: 16, paddingVertical: 12, borderRadius: radius.lg, maxWidth: '100%' },
+  fab: {
+    width: 64,
+    height: 64,
+    borderRadius: 24,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  badge: {
-    position: 'absolute',
-    left: 6,
-    bottom: 6,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 6,
-    paddingVertical: 3,
-    borderRadius: radius.full,
-    borderWidth: StyleSheet.hairlineWidth * 2,
-  },
-  centerBox: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
-  empty: {
-    marginHorizontal: PAD,
-    marginTop: 8,
-    paddingVertical: 36,
-    paddingHorizontal: 24,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderStyle: 'dashed',
-    borderRadius: radius.xl,
-  },
-  dock: { position: 'absolute', left: PAD, right: PAD, bottom: 0, alignItems: 'center' },
-  fabRing: {
-    borderRadius: radius.full,
-    padding: 1.5,
-    shadowColor: '#818cf8',
-    shadowOpacity: 0.45,
-    shadowRadius: 18,
+    shadowColor: '#000',
+    shadowOpacity: 0.25,
+    shadowRadius: 12,
     shadowOffset: { width: 0, height: 6 },
-    elevation: 8,
+    elevation: 6,
   },
-  fab: { borderRadius: radius.full, paddingHorizontal: 26, height: 50, minWidth: 140, borderWidth: 0 },
+  actionBar: { flexDirection: 'row', borderRadius: radius.xl, paddingVertical: 10, paddingHorizontal: 6 },
+  actionBtn: { flex: 1, alignItems: 'center', gap: 4, paddingVertical: 4 },
+  clipBar: { flexDirection: 'row', alignItems: 'center', gap: 10, borderRadius: radius.xl, padding: 12, paddingLeft: 18 },
+  upload: { borderRadius: radius.xl, padding: 14 },
+  uploadIcon: { width: 40, height: 40, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  busy: { alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(43,43,39,0.15)' },
 });

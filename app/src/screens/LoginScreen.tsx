@@ -1,12 +1,13 @@
 import { useRef, useState } from 'react';
-import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, View, type TextInputInstance } from 'react-native';
+import { KeyboardAvoidingView, Linking, Platform, ScrollView, StyleSheet, Text, View, type TextInputInstance } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { LinearGradient } from 'expo-linear-gradient';
-import { ArrowRight, CircleAlert, HardDrive, Lock, Server } from 'lucide-react-native';
+import { ArrowRight, CircleAlert, Lock, Server } from 'lucide-react-native';
 import { login, normalizeBaseUrl, type Session } from '../api';
-import { radius, useTheme } from '../theme';
+import { font, radius, useTheme } from '../theme';
 import { Button, Input, Txt } from '../components/ui';
-import GridBackdrop from '../components/GridBackdrop';
+import { HeroArt, LogoMark } from '../components/Logo';
+
+const GUIDE_URL = 'https://github.com/avenlabs/file-manager-homelab#1-jalankan-server-di-casaos';
 
 export default function LoginScreen({ onLogin }: { onLogin: (s: Session) => void }) {
   const t = useTheme();
@@ -17,6 +18,7 @@ export default function LoginScreen({ onLogin }: { onLogin: (s: Session) => void
   const passwordRef = useRef<TextInputInstance>(null);
 
   const submit = async () => {
+    if (!url) return;
     setBusy(true);
     setError(null);
     try {
@@ -29,106 +31,91 @@ export default function LoginScreen({ onLogin }: { onLogin: (s: Session) => void
   };
 
   return (
-    <View style={{ flex: 1, backgroundColor: t.bg }}>
-      <GridBackdrop />
-      <SafeAreaView style={{ flex: 1 }}>
-        <KeyboardAvoidingView behavior="padding" style={{ flex: 1 }}>
-          <ScrollView
-            contentContainerStyle={styles.container}
-            keyboardShouldPersistTaps="handled"
-            keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
-          >
-            <View style={{ flex: 1, justifyContent: 'center', paddingVertical: 24 }}>
-              {/* Logo: kotak ikon dengan border gradient */}
-              <LinearGradient colors={t.gradient} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.logoRing}>
-                <View style={[styles.logo, { backgroundColor: t.bg }]}>
-                  <HardDrive size={22} color={t.text} strokeWidth={1.6} />
-                </View>
-              </LinearGradient>
+    <SafeAreaView style={{ flex: 1, backgroundColor: t.sheet }}>
+      <KeyboardAvoidingView behavior="padding" style={{ flex: 1 }}>
+        <ScrollView
+          contentContainerStyle={styles.container}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+        >
+          <View style={styles.brand}>
+            <LogoMark size={34} color={t.text} starColor={t.sheet} />
+            <Text style={[styles.wordmark, { color: t.text }]}>casa files</Text>
+          </View>
 
-              <Txt variant="caption" style={{ marginTop: 28 }}>
-                Self-hosted · CasaOS
+          <HeroArt height={150} />
+
+          <Text style={[styles.headline, { color: t.text }]}>Semua file homelab,{'\n'}di genggaman.</Text>
+          <Txt variant="muted" style={{ textAlign: 'center', lineHeight: 21, marginTop: 10 }}>
+            Upload foto & video langsung ke server CasaOS kamu.
+          </Txt>
+
+          <View style={{ gap: 14, marginTop: 26 }}>
+            <View style={{ gap: 6 }}>
+              <Txt variant="label">Alamat server</Txt>
+              <Input
+                icon={Server}
+                placeholder="192.168.1.10:8088"
+                autoCapitalize="none"
+                autoCorrect={false}
+                keyboardType="url"
+                textContentType="URL"
+                returnKeyType="next"
+                submitBehavior="submit"
+                value={url}
+                onChangeText={setUrl}
+                onSubmitEditing={() => passwordRef.current?.focus()}
+              />
+              <Txt variant="small" style={{ fontSize: 11.5 }}>
+                IP server + port casa-files (bukan port dashboard CasaOS)
               </Txt>
-              <Txt variant="title" style={{ fontSize: 34, marginTop: 6 }}>
-                Casa Files
-              </Txt>
-              <Txt variant="muted" style={{ marginTop: 6, lineHeight: 20 }}>
-                File pribadimu, di server sendiri.{'\n'}Masuk untuk terhubung ke homelab.
-              </Txt>
-
-              <View style={{ gap: 14, marginTop: 32 }}>
-                <View style={{ gap: 6 }}>
-                  <Txt variant="label">Alamat server</Txt>
-                  <Input
-                    icon={Server}
-                    placeholder="192.168.1.10:8088"
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    keyboardType="url"
-                    textContentType="URL"
-                    returnKeyType="next"
-                    submitBehavior="submit"
-                    value={url}
-                    onChangeText={setUrl}
-                    onSubmitEditing={() => passwordRef.current?.focus()}
-                  />
-                  <Txt variant="mono" style={{ fontSize: 11 }}>
-                    IP server (Jetson) + port casa-files, bukan port dashboard CasaOS
-                  </Txt>
-                </View>
-                <View style={{ gap: 6 }}>
-                  <Txt variant="label">Password</Txt>
-                  <Input
-                    ref={passwordRef}
-                    icon={Lock}
-                    placeholder="••••••••"
-                    secureTextEntry
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    textContentType="password"
-                    returnKeyType="go"
-                    value={password}
-                    onChangeText={setPassword}
-                    onSubmitEditing={submit}
-                  />
-                  <Txt variant="mono" style={{ fontSize: 11 }}>
-                    Password yang dibuat saat install server
-                  </Txt>
-                </View>
-
-                {error && (
-                  <View style={[styles.alert, { borderColor: t.danger + '55', backgroundColor: t.danger + '14' }]}>
-                    <CircleAlert size={16} color={t.danger} />
-                    <Txt variant="muted" style={{ color: t.danger, flex: 1 }}>
-                      {error}
-                    </Txt>
-                  </View>
-                )}
-
-                <Button
-                  label="Hubungkan"
-                  iconRight={ArrowRight}
-                  loading={busy}
-                  disabled={!url}
-                  onPress={submit}
-                  style={{ marginTop: 6 }}
-                />
-              </View>
+            </View>
+            <View style={{ gap: 6 }}>
+              <Txt variant="label">Password</Txt>
+              <Input
+                ref={passwordRef}
+                icon={Lock}
+                placeholder="Password saat install server"
+                secureTextEntry
+                autoCapitalize="none"
+                autoCorrect={false}
+                textContentType="password"
+                returnKeyType="go"
+                value={password}
+                onChangeText={setPassword}
+                onSubmitEditing={submit}
+              />
             </View>
 
-            <Txt variant="mono" style={{ textAlign: 'center', color: t.subtleText, paddingBottom: 8 }}>
-              Akses dari luar rumah? Pakai Tailscale.
-            </Txt>
-          </ScrollView>
-        </KeyboardAvoidingView>
-      </SafeAreaView>
-    </View>
+            {error && (
+              <View style={[styles.alert, { backgroundColor: '#f6dcd5' }]}>
+                <CircleAlert size={18} color={t.danger} />
+                <Txt variant="label" style={{ color: t.danger, flex: 1, lineHeight: 19 }}>
+                  {error}
+                </Txt>
+              </View>
+            )}
+
+            <Button label="Hubungkan" iconRight={ArrowRight} loading={busy} disabled={!url} onPress={submit} style={{ marginTop: 4 }} />
+          </View>
+
+          <Text style={[styles.footer, { color: t.mutedText }]}>
+            Belum install server?{' '}
+            <Text style={{ color: t.primary, fontFamily: font.bold }} onPress={() => Linking.openURL(GUIDE_URL)}>
+              Lihat panduan
+            </Text>
+          </Text>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flexGrow: 1, paddingHorizontal: 24 },
-  logoRing: { width: 52, height: 52, borderRadius: radius.lg + 2, padding: 1.5 },
-  logo: { flex: 1, borderRadius: radius.lg, alignItems: 'center', justifyContent: 'center' },
-  alert: { flexDirection: 'row', alignItems: 'center', gap: 8, borderWidth: 1, borderRadius: radius.md, padding: 12 },
+  container: { flexGrow: 1, paddingHorizontal: 24, paddingTop: 12, paddingBottom: 20 },
+  brand: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, marginBottom: 22 },
+  wordmark: { fontFamily: font.extrabold, fontSize: 26, letterSpacing: -0.8 },
+  headline: { fontFamily: font.bold, fontSize: 30, lineHeight: 35, letterSpacing: -0.9, textAlign: 'center', marginTop: 26 },
+  alert: { flexDirection: 'row', alignItems: 'center', gap: 10, borderRadius: radius.md, padding: 12 },
+  footer: { fontFamily: font.medium, fontSize: 13.5, textAlign: 'center', marginTop: 22 },
 });

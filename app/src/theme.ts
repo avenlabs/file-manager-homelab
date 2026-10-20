@@ -1,55 +1,68 @@
-import { useColorScheme } from 'react-native';
+// Design token: palet hangat dua-nada (charcoal + sage/cream) dengan aksen oranye,
+// sudut sangat membulat. Desainnya memang dua-nada (header gelap + sheet terang),
+// jadi tidak ada mode gelap/terang terpisah.
+const palette = {
+  // permukaan gelap
+  bg: '#2b2b27',
+  bgRaised: '#36362f',
+  lineDark: '#45453d',
+  textOnDark: '#f3f1e3',
+  mutedOnDark: '#a9a899',
 
-// Token warna mengikuti palet "zinc" shadcn/ui, plus gradient aksen untuk sentuhan futuristik.
-const dark = {
-  dark: true,
-  bg: '#09090b',
-  card: '#0f0f12',
-  muted: '#18181b',
-  border: '#27272a',
-  text: '#fafafa',
-  mutedText: '#a1a1aa',
-  subtleText: '#71717a',
-  primary: '#fafafa',
-  primaryText: '#09090b',
-  danger: '#f87171',
-  ring: '#52525b',
-  gradient: ['#22d3ee', '#818cf8', '#c084fc'] as readonly [string, string, string],
-  overlay: 'rgba(0,0,0,0.6)',
-  grid: 'rgba(255,255,255,0.06)',
+  // permukaan terang
+  sheet: '#d9dbc1',
+  panel: '#e5e6d0',
+  card: '#fbf9e8',
+  stripe: '#c8caad',
+  line: '#d2d3b9',
+  text: '#23231f',
+  mutedText: '#6f705f',
+  subtleText: '#9c9d89',
+
+  // aksen
+  primary: '#e8682f',
+  primaryPressed: '#cf5823',
+  primaryText: '#fffaf0',
+  primarySoft: '#f6c9a9',
+  danger: '#d8453b',
+  success: '#3e8f5c',
+  overlay: 'rgba(28,28,24,0.55)',
 };
 
-const light: typeof dark = {
-  dark: false,
-  bg: '#ffffff',
-  card: '#ffffff',
-  muted: '#f4f4f5',
-  border: '#e4e4e7',
-  text: '#09090b',
-  mutedText: '#71717a',
-  subtleText: '#a1a1aa',
-  primary: '#18181b',
-  primaryText: '#fafafa',
-  danger: '#dc2626',
-  ring: '#a1a1aa',
-  gradient: ['#06b6d4', '#6366f1', '#a855f7'],
-  overlay: 'rgba(9,9,11,0.35)',
-  grid: 'rgba(9,9,11,0.05)',
+export const flagColors = {
+  red: '#d8453b',
+  orange: '#e8682f',
+  yellow: '#e2a521',
+  green: '#3e8f5c',
+  blue: '#3b74c9',
+  purple: '#7a55c7',
+  gray: '#8a8b7b',
+} as const;
+
+export type FlagColor = keyof typeof flagColors;
+
+export const flagLabels: Record<FlagColor, string> = {
+  red: 'Merah',
+  orange: 'Oranye',
+  yellow: 'Kuning',
+  green: 'Hijau',
+  blue: 'Biru',
+  purple: 'Ungu',
+  gray: 'Abu',
 };
 
 export const font = {
-  regular: 'Geist_400Regular',
-  medium: 'Geist_500Medium',
-  semibold: 'Geist_600SemiBold',
-  bold: 'Geist_700Bold',
-  mono: 'GeistMono_400Regular',
-  monoMedium: 'GeistMono_500Medium',
+  regular: 'PlusJakartaSans_400Regular',
+  medium: 'PlusJakartaSans_500Medium',
+  semibold: 'PlusJakartaSans_600SemiBold',
+  bold: 'PlusJakartaSans_700Bold',
+  extrabold: 'PlusJakartaSans_800ExtraBold',
 };
 
-export const radius = { sm: 6, md: 8, lg: 12, xl: 16, full: 999 };
+export const radius = { sm: 10, md: 14, lg: 20, xl: 28, sheet: 34, full: 999 };
 
 export function useTheme() {
-  return useColorScheme() === 'light' ? light : dark;
+  return palette;
 }
 
-export type Theme = ReturnType<typeof useTheme>;
+export type Theme = typeof palette;

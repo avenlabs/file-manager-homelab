@@ -13,30 +13,44 @@ import {
   type TextProps,
   type ViewStyle,
 } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
+import Svg, { Defs, Line, Pattern, Rect } from 'react-native-svg';
 import type { LucideProps } from 'lucide-react-native';
 import { font, radius, useTheme } from '../theme';
 
 export type Icon = ComponentType<LucideProps>;
 
-type TxtVariant = 'title' | 'heading' | 'body' | 'label' | 'muted' | 'mono' | 'caption';
+type TxtVariant = 'display' | 'title' | 'heading' | 'body' | 'label' | 'muted' | 'caption' | 'small';
 
-/** Teks dengan varian tipografi (Geist / Geist Mono). */
-export function Txt({ variant = 'body', style, ...rest }: TextProps & { variant?: TxtVariant }) {
+/** Teks dengan varian tipografi. `dark` = teks di atas permukaan gelap. */
+export function Txt({
+  variant = 'body',
+  dark,
+  style,
+  ...rest
+}: TextProps & { variant?: TxtVariant; dark?: boolean }) {
   const t = useTheme();
+  const ink = dark ? t.textOnDark : t.text;
+  const muted = dark ? t.mutedOnDark : t.mutedText;
   const v = {
-    title: { fontFamily: font.semibold, fontSize: 28, letterSpacing: -0.8, color: t.text },
-    heading: { fontFamily: font.semibold, fontSize: 17, letterSpacing: -0.3, color: t.text },
-    body: { fontFamily: font.medium, fontSize: 15, letterSpacing: -0.1, color: t.text },
-    label: { fontFamily: font.medium, fontSize: 13, color: t.text },
-    muted: { fontFamily: font.regular, fontSize: 14, color: t.mutedText },
-    mono: { fontFamily: font.mono, fontSize: 12, color: t.mutedText },
-    caption: { fontFamily: font.monoMedium, fontSize: 11, letterSpacing: 1, color: t.subtleText, textTransform: 'uppercase' as const },
+    display: { fontFamily: font.bold, fontSize: 34, letterSpacing: -1, lineHeight: 40, color: ink },
+    title: { fontFamily: font.bold, fontSize: 24, letterSpacing: -0.6, color: ink },
+    heading: { fontFamily: font.bold, fontSize: 17, letterSpacing: -0.3, color: ink },
+    body: { fontFamily: font.semibold, fontSize: 15, letterSpacing: -0.1, color: ink },
+    label: { fontFamily: font.semibold, fontSize: 13, color: ink },
+    muted: { fontFamily: font.medium, fontSize: 14, color: muted },
+    small: { fontFamily: font.medium, fontSize: 12, color: muted },
+    caption: {
+      fontFamily: font.bold,
+      fontSize: 10.5,
+      letterSpacing: 0.8,
+      color: muted,
+      textTransform: 'uppercase' as const,
+    },
   }[variant];
   return <Text {...rest} style={[v, style]} />;
 }
 
-type ButtonVariant = 'primary' | 'outline' | 'ghost' | 'destructive';
+type ButtonVariant = 'primary' | 'dark' | 'light' | 'outline' | 'danger';
 
 export function Button({
   label,
@@ -45,6 +59,7 @@ export function Button({
   variant = 'primary',
   loading,
   disabled,
+  size = 'md',
   style,
   ...rest
 }: Omit<PressableProps, 'style'> & {
@@ -52,21 +67,23 @@ export function Button({
   icon?: Icon;
   iconRight?: Icon;
   variant?: ButtonVariant;
+  size?: 'sm' | 'md';
   loading?: boolean;
   style?: StyleProp<ViewStyle>;
 }) {
   const t = useTheme();
-  const bg = { primary: t.primary, outline: 'transparent', ghost: 'transparent', destructive: t.danger }[variant];
-  const fg = { primary: t.primaryText, outline: t.text, ghost: t.text, destructive: '#fff' }[variant];
+  const bg = { primary: t.primary, dark: t.bg, light: t.card, outline: 'transparent', danger: t.danger }[variant];
+  const fg = { primary: t.primaryText, dark: t.textOnDark, light: t.text, outline: t.text, danger: '#fff' }[variant];
   return (
     <Pressable
       disabled={disabled || loading}
       style={({ pressed }) => [
         styles.button,
+        size === 'sm' && { height: 40, paddingHorizontal: 16 },
         {
-          backgroundColor: bg,
-          borderColor: variant === 'outline' ? t.border : 'transparent',
-          opacity: disabled ? 0.5 : pressed ? 0.85 : 1,
+          backgroundColor: pressed && variant === 'primary' ? t.primaryPressed : bg,
+          borderColor: variant === 'outline' ? t.stripe : 'transparent',
+          opacity: disabled ? 0.45 : pressed && variant !== 'primary' ? 0.8 : 1,
         },
         style,
       ]}
@@ -76,51 +93,58 @@ export function Button({
         <ActivityIndicator color={fg} />
       ) : (
         <>
-          {IconCmp && <IconCmp size={16} color={fg} strokeWidth={2} />}
-          <Text style={{ color: fg, fontFamily: font.medium, fontSize: 15 }}>{label}</Text>
-          {IconRight && <IconRight size={16} color={fg} strokeWidth={2} />}
+          {IconCmp && <IconCmp size={size === 'sm' ? 15 : 17} color={fg} strokeWidth={2.2} />}
+          <Text style={{ color: fg, fontFamily: font.bold, fontSize: size === 'sm' ? 13.5 : 15.5 }}>{label}</Text>
+          {IconRight && <IconRight size={17} color={fg} strokeWidth={2.2} />}
         </>
       )}
     </Pressable>
   );
 }
 
+/**
+ * Tombol ikon bulat.
+ * dark = di atas header gelap, light = di atas sheet terang, primary = oranye, plain = tanpa latar.
+ */
 export function IconButton({
   icon: IconCmp,
   onPress,
-  variant = 'outline',
-  size = 36,
+  variant = 'light',
+  size = 40,
   color,
   disabled,
+  accessibilityLabel,
 }: {
   icon: Icon;
   onPress?: () => void;
-  variant?: 'outline' | 'ghost' | 'glass';
+  variant?: 'dark' | 'light' | 'primary' | 'plain' | 'glass';
   size?: number;
   color?: string;
   disabled?: boolean;
+  accessibilityLabel?: string;
 }) {
   const t = useTheme();
+  const bg = { dark: t.bgRaised, light: t.card, primary: t.primary, plain: 'transparent', glass: 'rgba(54,54,47,0.88)' }[variant];
+  const fg =
+    color ?? { dark: t.textOnDark, light: t.text, primary: t.primaryText, plain: t.text, glass: t.textOnDark }[variant];
   return (
     <Pressable
       hitSlop={8}
       onPress={onPress}
       disabled={disabled}
-      style={({ pressed }) => [
-        {
-          width: size,
-          height: size,
-          borderRadius: variant === 'glass' ? size / 2 : radius.md,
-          alignItems: 'center',
-          justifyContent: 'center',
-          borderWidth: variant === 'outline' ? StyleSheet.hairlineWidth * 2 : 0,
-          borderColor: t.border,
-          backgroundColor: variant === 'glass' ? 'rgba(24,24,27,0.7)' : pressed ? t.muted : 'transparent',
-          opacity: pressed ? 0.8 : 1,
-        },
-      ]}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+      style={({ pressed }) => ({
+        width: size,
+        height: size,
+        borderRadius: size / 2,
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: bg,
+        opacity: disabled ? 0.4 : pressed ? 0.7 : 1,
+      })}
     >
-      <IconCmp size={size * 0.47} color={color ?? (variant === 'glass' ? '#fafafa' : t.text)} strokeWidth={1.75} />
+      <IconCmp size={size * 0.46} color={fg} strokeWidth={2} />
     </Pressable>
   );
 }
@@ -146,13 +170,9 @@ export function Input({
   return (
     <Pressable
       onPress={() => inner.current?.focus()}
-      style={[
-        styles.input,
-        { borderColor: focused ? t.ring : t.border, backgroundColor: t.dark ? t.muted + '80' : t.bg },
-        focused && { shadowColor: t.gradient[1], shadowOpacity: 0.35, shadowRadius: 8, shadowOffset: { width: 0, height: 0 } },
-      ]}
+      style={[styles.input, { borderColor: focused ? t.primary : t.line, backgroundColor: t.card }]}
     >
-      {IconCmp && <IconCmp size={16} color={t.subtleText} strokeWidth={1.75} />}
+      {IconCmp && <IconCmp size={18} color={focused ? t.primary : t.subtleText} strokeWidth={2} />}
       <TextInput
         ref={setRef}
         placeholderTextColor={t.subtleText}
@@ -170,7 +190,7 @@ export function Input({
             flex: 1,
             alignSelf: 'stretch',
             color: t.text,
-            fontFamily: font.regular,
+            fontFamily: font.semibold,
             fontSize: 15,
             paddingVertical: 0,
             outlineStyle: 'none',
@@ -184,68 +204,162 @@ export function Input({
 
 export function Card({ children, style }: { children: ReactNode; style?: StyleProp<ViewStyle> }) {
   const t = useTheme();
-  return (
-    <View style={[{ backgroundColor: t.card, borderColor: t.border, borderWidth: StyleSheet.hairlineWidth * 2, borderRadius: radius.lg }, style]}>
-      {children}
-    </View>
-  );
+  return <View style={[{ backgroundColor: t.card, borderRadius: radius.lg }, style]}>{children}</View>;
 }
 
-/** Progress bar tipis dengan gradient aksen. */
-export function GradientBar({ value, height = 4 }: { value: number; height?: number }) {
+/** Tab pill seperti "Day / Week / Month" di desain referensi. */
+export function Segmented<T extends string>({
+  options,
+  value,
+  onChange,
+}: {
+  options: { value: T; label: string }[];
+  value: T;
+  onChange: (v: T) => void;
+}) {
   const t = useTheme();
-  const pct = Math.max(0, Math.min(1, value));
   return (
-    <View style={{ height, borderRadius: height, backgroundColor: t.muted, overflow: 'hidden' }}>
-      <LinearGradient
-        colors={t.gradient}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 0 }}
-        style={{ width: `${pct * 100}%`, height: '100%', borderRadius: height }}
-      />
+    <View style={{ flexDirection: 'row', gap: 4 }}>
+      {options.map((o) => {
+        const active = o.value === value;
+        return (
+          <Pressable
+            key={o.value}
+            onPress={() => onChange(o.value)}
+            hitSlop={4}
+            style={{
+              paddingHorizontal: 14,
+              height: 36,
+              borderRadius: radius.md,
+              justifyContent: 'center',
+              backgroundColor: active ? t.primary : 'transparent',
+            }}
+          >
+            <Text
+              style={{
+                fontFamily: font.bold,
+                fontSize: 14,
+                color: active ? t.primaryText : t.textOnDark,
+              }}
+            >
+              {o.label}
+            </Text>
+          </Pressable>
+        );
+      })}
     </View>
   );
 }
 
-/** Kotak ikon kecil berborder, gaya "outline" shadcn. */
-export function IconTile({ icon: IconCmp, size = 40, color }: { icon: Icon; size?: number; color?: string }) {
+/** Badge angka oranye kecil (seperti notifikasi di header referensi). */
+export function Badge({ value }: { value: number | string }) {
+  const t = useTheme();
+  return (
+    <View
+      style={{
+        minWidth: 22,
+        height: 22,
+        paddingHorizontal: 6,
+        borderRadius: 7,
+        backgroundColor: t.primary,
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}
+    >
+      <Text style={{ color: t.primaryText, fontFamily: font.bold, fontSize: 11.5 }}>{value}</Text>
+    </View>
+  );
+}
+
+/** Kotak ikon membulat. */
+export function IconTile({
+  icon: IconCmp,
+  size = 46,
+  bg,
+  color,
+}: {
+  icon: Icon;
+  size?: number;
+  bg?: string;
+  color?: string;
+}) {
   const t = useTheme();
   return (
     <View
       style={{
         width: size,
         height: size,
-        borderRadius: radius.md + 2,
-        backgroundColor: t.muted,
-        borderColor: t.border,
-        borderWidth: StyleSheet.hairlineWidth * 2,
+        borderRadius: size * 0.32,
+        backgroundColor: bg ?? t.panel,
         alignItems: 'center',
         justifyContent: 'center',
       }}
     >
-      <IconCmp size={size * 0.45} color={color ?? t.text} strokeWidth={1.6} />
+      <IconCmp size={size * 0.44} color={color ?? t.text} strokeWidth={1.9} />
+    </View>
+  );
+}
+
+let hatchId = 0;
+
+/** Pola garis diagonal (seperti slot "No Meetings" di referensi). */
+export function Hatch({
+  style,
+  color,
+  bg,
+  children,
+}: {
+  style?: StyleProp<ViewStyle>;
+  color?: string;
+  bg?: string;
+  children?: ReactNode;
+}) {
+  const t = useTheme();
+  const [id] = useState(() => `hatch${hatchId++}`);
+  return (
+    <View style={[{ overflow: 'hidden', borderRadius: radius.md, backgroundColor: bg ?? t.panel }, style]}>
+      <Svg width="100%" height="100%" style={StyleSheet.absoluteFill} pointerEvents="none">
+        <Defs>
+          <Pattern id={id} width={9} height={9} patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+            <Line x1={0} y1={0} x2={0} y2={9} stroke={color ?? t.stripe} strokeWidth={3} />
+          </Pattern>
+        </Defs>
+        <Rect width="100%" height="100%" fill={`url(#${id})`} />
+      </Svg>
+      {children}
+    </View>
+  );
+}
+
+/** Bar tunggal sederhana (progress / magnitude). */
+export function Bar({ value, color, height = 8, track }: { value: number; color?: string; height?: number; track?: string }) {
+  const t = useTheme();
+  const pct = Math.max(0, Math.min(1, value));
+  return (
+    <View style={{ height, borderRadius: height, backgroundColor: track ?? t.panel, overflow: 'hidden' }}>
+      <View style={{ width: `${pct * 100}%`, height: '100%', borderRadius: height, backgroundColor: color ?? t.primary }} />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   button: {
-    height: 46,
-    borderRadius: radius.md,
-    borderWidth: StyleSheet.hairlineWidth * 2,
+    height: 54,
+    borderRadius: radius.lg,
+    borderWidth: 1.5,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
-    paddingHorizontal: 18,
+    paddingHorizontal: 22,
   },
   input: {
-    height: 46,
-    borderRadius: radius.md,
-    borderWidth: StyleSheet.hairlineWidth * 2,
+    height: 54,
+    borderRadius: radius.lg,
+    borderWidth: 1.5,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    paddingHorizontal: 14,
+    gap: 12,
+    paddingHorizontal: 16,
   },
 });

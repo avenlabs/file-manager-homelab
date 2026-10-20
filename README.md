@@ -30,14 +30,19 @@ langsung terlihat juga di CasaOS Files (dan sebaliknya), selama `STORAGE_PATH` m
 
 ## Fitur
 
-- Browse folder (list / grid), info kapasitas disk, pull-to-refresh
+- Browse folder (list / grid), filter Semua / Foto / Video / Dokumen, cari nama file
 - Upload multi foto & video dari galeri (file asli HEIC/HEVC), kamera, atau file apa pun
 - Antrian upload (2 paralel), progress, cancel, tetap jalan saat app di-minimize
 - Upload di-stream ke disk → video ukuran GB aman; nama bentrok otomatis jadi `foto (1).jpg`
-- Preview gambar & streaming video (HTTP Range), share / simpan ke Photos
-- Folder baru, rename, hapus
+- **Mode pilih**: pilih semua, lalu salin / pindah (clipboard → buka folder tujuan → Tempel), flag, hapus
+- **Flag warna** (merah, oranye, kuning, hijau, biru, ungu, abu) + filter per warna; flag ikut saat file dipindah/rename
+- Preview: foto, video, audio, teks/kode (md, json, go, js, csv, log, …), PDF (iOS)
+- **Dokumen Office (docx, xlsx, pptx, …) diserahkan ke Google Drive / Docs / Sheets / Slides**
+- Tipe lain: buka dengan aplikasi lain di HP; semua tipe bisa dibagikan / disimpan
+- **Halaman Analitik**: kapasitas disk, jumlah file/folder, komposisi per kategori, lokasi storage
+  (folder, mount point, filesystem, device), info server, ekstensi & file terbesar, file terbaru
+- Folder baru, rename, hapus (dengan konfirmasi)
 - Login password → token HMAC (default 30 hari), proteksi path traversal & symlink escape
-- Mode terang/gelap otomatis
 
 ---
 
@@ -153,7 +158,9 @@ Lalu scan QR code yang muncul:
 
 Di layar login isi alamat server, mis. `192.168.1.10:8088`, dan `APP_PASSWORD` dari file `.env`.
 
-Cek kode: `npm run typecheck`.
+Cek kode: `npm run typecheck` dan `npm run lint`.
+
+Navigasi memakai Expo Router (`app/src/app/`): `index` (file), `analytics`, `settings`, `login`.
 
 ---
 
@@ -185,10 +192,18 @@ Semua endpoint (kecuali health & login) butuh `Authorization: Bearer <token>` at
 | POST | `/api/mkdir` | `{"path"}` |
 | POST | `/api/rename` | `{"from","to"}` |
 | DELETE | `/api/delete?path=...` | hapus file/folder |
+| POST | `/api/delete` | hapus banyak: `{"paths": [...]}` |
+| POST | `/api/copy` | salin: `{"paths": [...], "dest": "/folder"}` |
+| POST | `/api/move` | pindah: `{"paths": [...], "dest": "/folder"}` |
+| POST | `/api/flag` | flag warna: `{"paths": [...], "color": "red"}` (`""` = hapus flag) |
+| GET | `/api/stats` | analitik storage (di-cache 5 menit, `?refresh=1` scan ulang) |
 
 Env server: `APP_PASSWORD` (wajib), `TOKEN_SECRET`, `TOKEN_TTL_HOURS` (720), `STORAGE_ROOT` (`/data`), `PORT` (8088).
 
 Menjalankan server tanpa Docker (development): `cd server && APP_PASSWORD=test STORAGE_ROOT=./data go run .`
+Test: `cd server && go test ./...`
+
+Flag disimpan di `<STORAGE_PATH>/.casa-files/meta.json` (folder ini disembunyikan dan tidak bisa diakses lewat API).
 
 ## Troubleshooting
 

@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { UploadTask } from 'expo-file-system';
 import { createUpload, type Session } from './api';
 
@@ -22,6 +22,8 @@ export function useUploads(session: Session, onFileDone: (destDir: string) => vo
   const pending = useRef<{ id: string; file: PickedFile; destDir: string }[]>([]);
   const tasks = useRef(new Map<string, UploadTask>());
   const active = useRef(0);
+  // pump memanggil dirinya lagi setelah upload selesai; lewat ref agar selalu versi terbaru.
+  const pumpRef = useRef<() => void>(() => {});
 
   const patch = (id: string, p: Partial<UploadItem>) =>
     setItems((prev) => prev.map((it) => (it.id === id ? { ...it, ...p } : it)));
@@ -56,10 +58,14 @@ export function useUploads(session: Session, onFileDone: (destDir: string) => vo
           tasks.current.delete(job.id);
           task.release();
           active.current--;
-          pump();
+          pumpRef.current();
         });
     }
   }, [session, onFileDone]);
+
+  useEffect(() => {
+    pumpRef.current = pump;
+  }, [pump]);
 
   const enqueue = useCallback(
     (files: PickedFile[], destDir: string) => {

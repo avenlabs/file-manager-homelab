@@ -21,7 +21,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -30,6 +29,8 @@ type server struct {
 	password string
 	secret   []byte
 	tokenTTL time.Duration
+	meta     *metaStore
+	stats    statsCache
 }
 
 type entry struct {
@@ -39,6 +40,7 @@ type entry struct {
 	Size    int64     `json:"size"`
 	ModTime time.Time `json:"modTime"`
 	Mime    string    `json:"mime,omitempty"`
+	Flag    string    `json:"flag,omitempty"`
 }
 
 func main() {
@@ -65,8 +67,25 @@ func main() {
 		log.Fatal(err)
 	}
 
-	s := &server{root: absRoot, password: password, secret: secret, tokenTTL: time.Duration(ttlHours) * time.Hour}
+	meta, err := loadMeta(absRoot)
+	if err != nil {
+		log.Fatalf("gagal membaca metadata: %v", err)
+	}
 
+	s := &server{root: absRoot, password: password, secret: secret, tokenTTL: time.Duration(ttlHours) * time.Hour, meta: meta}
+
+	addr := ":" + env("PORT", "8088")
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           cors(logRequests(s.routes())),
+		ReadHeaderTimeout: 15 * time.Second,
+		// Tanpa Read/WriteTimeout agar upload & streaming video besar tidak terputus.
+	}
+	log.Printf("casa-files-server %s listening on %s, root=%s", version, addr, absRoot)
+	log.Fatal(srv.ListenAndServe())
+}
+
+func (s *server) routes() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -79,16 +98,12 @@ func main() {
 	mux.Handle("POST /api/mkdir", s.auth(s.handleMkdir))
 	mux.Handle("POST /api/rename", s.auth(s.handleRename))
 	mux.Handle("DELETE /api/delete", s.auth(s.handleDelete))
-
-	addr := ":" + env("PORT", "8088")
-	srv := &http.Server{
-		Addr:              addr,
-		Handler:           cors(logRequests(mux)),
-		ReadHeaderTimeout: 15 * time.Second,
-		// Tanpa Read/WriteTimeout agar upload & streaming video besar tidak terputus.
-	}
-	log.Printf("casa-files-server listening on %s, root=%s", addr, absRoot)
-	log.Fatal(srv.ListenAndServe())
+	mux.Handle("POST /api/delete", s.auth(s.handleDeleteBatch))
+	mux.Handle("POST /api/copy", s.auth(s.handleTransfer(false)))
+	mux.Handle("POST /api/move", s.auth(s.handleTransfer(true)))
+	mux.Handle("POST /api/flag", s.auth(s.handleFlag))
+	mux.Handle("GET /api/stats", s.auth(s.handleStats))
+	return mux
 }
 
 // ---------- auth ----------
@@ -185,6 +200,9 @@ func (s *server) resolve(p string) (string, error) {
 	if real != realRoot && !strings.HasPrefix(real, realRoot+string(os.PathSeparator)) {
 		return "", errOutside
 	}
+	if isUnder(filepath.ToSlash(abs), filepath.ToSlash(filepath.Join(s.root, metaDirName))) {
+		return "", errOutside
+	}
 	return abs, nil
 }
 
@@ -200,14 +218,7 @@ func validName(name string) bool {
 // ---------- handlers ----------
 
 func (s *server) handleStorage(w http.ResponseWriter, r *http.Request) {
-	var st syscall.Statfs_t
-	if err := syscall.Statfs(s.root, &st); err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	total := st.Blocks * uint64(st.Bsize)
-	free := st.Bavail * uint64(st.Bsize)
-	writeJSON(w, http.StatusOK, map[string]uint64{"total": total, "free": free, "used": total - free})
+	writeJSON(w, http.StatusOK, diskUsage(s.root))
 }
 
 func (s *server) handleList(w http.ResponseWriter, r *http.Request) {
@@ -227,6 +238,9 @@ func (s *server) handleList(w http.ResponseWriter, r *http.Request) {
 		if !showHidden && strings.HasPrefix(de.Name(), ".") {
 			continue
 		}
+		if abs == s.root && de.Name() == metaDirName {
+			continue
+		}
 		info, err := de.Info()
 		if err != nil {
 			continue
@@ -241,6 +255,7 @@ func (s *server) handleList(w http.ResponseWriter, r *http.Request) {
 			e.Size = info.Size()
 			e.Mime = mime.TypeByExtension(strings.ToLower(filepath.Ext(de.Name())))
 		}
+		e.Flag = s.meta.flag(e.Path)
 		entries = append(entries, e)
 	}
 	sort.Slice(entries, func(i, j int) bool {
@@ -413,6 +428,9 @@ func (s *server) handleRename(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if err := s.meta.rename(s.rel(from), s.rel(to)); err != nil {
+		log.Printf("meta rename: %v", err)
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"path": s.rel(to)})
 }
 
@@ -429,6 +447,9 @@ func (s *server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	if err := os.RemoveAll(abs); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if err := s.meta.remove(s.rel(abs)); err != nil {
+		log.Printf("meta remove: %v", err)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
