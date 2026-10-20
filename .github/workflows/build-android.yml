@@ -1,0 +1,70 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [main]
+    paths: ["app/**", ".github/workflows/build-android.yml"]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - run: npm ci
+
+      # Generate project native Android dari app.json (Continuous Native Generation)
+      - run: npx expo prebuild --platform android --no-install
+
+      # Hanya ABI untuk HP (tanpa x86 emulator) agar build lebih cepat & APK lebih kecil
+      - name: Build release APK
+        working-directory: app/android
+        run: ./gradlew assembleRelease --no-daemon -PreactNativeArchitectures=armeabi-v7a,arm64-v8a
+
+      - name: Rename APK
+        id: apk
+        run: |
+          VERSION=$(node -p "require('./app.json').expo.version")
+          OUT="casa-files-${VERSION}-${GITHUB_SHA::7}.apk"
+          mv android/app/build/outputs/apk/release/app-release.apk "$OUT"
+          echo "file=app/$OUT" >> "$GITHUB_OUTPUT"
+          ls -lh "$OUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: casa-files-apk
+          path: ${{ steps.apk.outputs.file }}
+          retention-days: 30
+
+      - name: Attach APK to release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" "../${{ steps.apk.outputs.file }}" --clobber

@@ -2,7 +2,7 @@
   "expo": {
     "name": "Casa Files",
     "slug": "casa-files",
-    "version": "1.0.0",
+    "version": "0.1.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -28,7 +28,8 @@
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "com.joywibowo.casafiles"
+      "package": "com.joywibowo.casafiles",
+      "versionCode": 1
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -53,6 +54,11 @@
           }
         }
       ]
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "d1c363d3-09f3-4afe-8a0d-897bb434a38d"
+      }
+    }
   }
 }
