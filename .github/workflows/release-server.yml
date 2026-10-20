@@ -1,0 +1,39 @@
+name: Release server
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - name: Build binaries
+        working-directory: server
+        run: |
+          mkdir -p ../dist
+          build() { CGO_ENABLED=0 GOOS=linux GOARCH=$1 GOARM=${3:-} go build -trimpath -ldflags="-s -w" -o ../dist/casa-files-server-linux-$2 .; }
+          build arm64 arm64
+          build amd64 amd64
+          build arm armv7 7
+          cp install.sh ../dist/
+          cd ../dist && sha256sum casa-files-server-* > SHA256SUMS
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+      - name: Upload artifacts
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: casa-files-server
+          path: dist/*

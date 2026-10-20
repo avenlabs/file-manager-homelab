@@ -31,7 +31,47 @@ File manager mobile (iPhone & Android) untuk upload, melihat, dan mengelola foto
 
 ## 1. Jalankan server di CasaOS
 
-Yang dibutuhkan: akses SSH ke server CasaOS (Docker sudah terpasang bawaan CasaOS).
+Ada dua cara. **Opsi A** paling ringan dan paling mudah, cocok untuk perangkat kecil
+(Jetson Nano, Raspberry Pi) atau server dengan Docker versi lama.
+
+### Opsi A — Tanpa Docker (disarankan untuk Jetson Nano / Raspberry Pi)
+
+Server berupa satu file program (~6MB, RAM ~10MB) yang dijalankan sebagai service systemd.
+Mendukung arm64 (Jetson Nano, RPi 64-bit), amd64, dan armv7.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/avenlabs/file-manager-homelab/main/server/install.sh | sudo bash
+```
+
+Installer akan menanyakan password dan folder storage, lalu menampilkan alamat untuk diisi di app.
+Service otomatis jalan saat boot dan menunggu disk eksternal ter-mount.
+
+| Keperluan | Perintah |
+|---|---|
+| Status | `sudo systemctl status casa-files` |
+| Log | `sudo journalctl -u casa-files -f` |
+| Restart | `sudo systemctl restart casa-files` |
+| Ubah password / storage | `sudo nano /etc/casa-files/casa-files.env` lalu restart |
+| Update ke versi terbaru | jalankan ulang perintah install (konfigurasi tetap) |
+| Uninstall | `sudo systemctl disable --now casa-files && sudo rm /etc/systemd/system/casa-files.service /usr/local/bin/casa-files-server` |
+
+Tanpa akses internet di server? Download `casa-files-server-linux-arm64` dan `install.sh` dari
+[halaman Releases](https://github.com/avenlabs/file-manager-homelab/releases), copy ke server, lalu
+`sudo bash install.sh ./casa-files-server-linux-arm64`.
+
+### Opsi B — Docker Compose
+
+Butuh Docker Compose v2 (`docker compose version`). Kalau belum ada, install plugin-nya:
+
+```bash
+sudo mkdir -p /usr/local/lib/docker/cli-plugins
+sudo curl -fL https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-$(uname -m) \
+  -o /usr/local/lib/docker/cli-plugins/docker-compose
+sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+docker compose version
+```
+
+Lalu:
 
 ```bash
 # 1. Clone repo di server
