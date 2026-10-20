@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { ActivityIndicator, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
-import * as SecureStore from 'expo-secure-store';
+import { storage } from './src/storage';
 import type { Session } from './src/api';
 import LoginScreen from './src/screens/LoginScreen';
 import BrowserScreen from './src/screens/BrowserScreen';
@@ -14,18 +14,18 @@ export default function App() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    SecureStore.getItemAsync(SESSION_KEY)
+    storage.get(SESSION_KEY)
       .then((raw) => raw && setSession(JSON.parse(raw)))
       .finally(() => setLoading(false));
   }, []);
 
   const onLogin = async (s: Session) => {
-    await SecureStore.setItemAsync(SESSION_KEY, JSON.stringify(s));
+    await storage.set(SESSION_KEY, JSON.stringify(s));
     setSession(s);
   };
 
   const onLogout = async () => {
-    await SecureStore.deleteItemAsync(SESSION_KEY);
+    await storage.remove(SESSION_KEY);
     setSession(null);
   };
 
