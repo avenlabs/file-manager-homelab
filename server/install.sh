@@ -36,7 +36,7 @@ if [ -n "${1:-}" ]; then
 else
   URL="https://github.com/$REPO/releases/latest/download/casa-files-server-linux-$ARCH"
   say "Download $URL"
-  curl -fL --retry 3 -o "$TMP" "$URL" || die "gagal download binary"
+  curl -fL --retry 3 -o "$TMP" "$URL" || die "gagal download binary. Pastikan sudah ada release di https://github.com/$REPO/releases"
 fi
 # Pastikan yang terdownload benar-benar program (ELF), bukan halaman HTML.
 [ "$(head -c 4 "$TMP" | od -An -c | tr -d ' ')" = '177ELF' ] || die "file bukan binary Linux (ELF)"
