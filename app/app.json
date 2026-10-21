@@ -2,7 +2,7 @@
   "expo": {
     "name": "Casa Files",
     "slug": "avenlabs",
-    "version": "0.3.0",
+    "version": "0.4.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -29,7 +29,7 @@
       },
       "predictiveBackGestureEnabled": false,
       "package": "com.joywibowo.casafiles",
-      "versionCode": 3
+      "versionCode": 4
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -54,7 +54,19 @@
             "usesCleartextTraffic": true
           }
         }
-      ]
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Izinkan Casa Files menampilkan foto & video di HP kamu.",
+          "savePhotosPermission": "Izinkan Casa Files menyimpan foto & video ke Galeri.",
+          "granularPermissions": [
+            "photo",
+            "video"
+          ]
+        }
+      ],
+      "expo-web-browser"
     ],
     "extra": {
       "eas": {

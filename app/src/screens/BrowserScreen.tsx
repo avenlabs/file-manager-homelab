@@ -5,7 +5,6 @@ import {
   FlatList,
   Pressable,
   RefreshControl,
-  ScrollView,
   StyleSheet,
   Text,
   useWindowDimensions,
@@ -18,12 +17,12 @@ import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import {
+  ChartPie,
   Camera,
   Check,
   ChevronLeft,
   ChevronRight,
   ClipboardPaste,
-  CloudUpload,
   Copy,
   Ellipsis,
   ExternalLink,
@@ -37,41 +36,28 @@ import {
   List,
   Pencil,
   Plus,
-  RotateCcw,
   Search,
   Share2,
   Trash2,
-  TriangleAlert,
   X,
 } from 'lucide-react-native';
-import {
-  ApiError,
-  copyItems,
-  deleteItems,
-  fileUrl,
-  formatBytes,
-  formatDate,
-  joinPath,
-  listDir,
-  mkdir,
-  moveItems,
-  parentPath,
-  rename,
-  setFlag,
-  type Entry,
-  type Session,
-} from '../api';
+import { ApiError, formatDate, formatSize } from '../api';
 import { categoryOf, extLabel, iconFor, previewKind, type Category } from '../fileTypes';
+import { AuthExpiredError } from '../providers/oauth';
+import type { FileItem, Folder as FolderRef, MediaSource, StorageProvider } from '../providers/types';
+import { useSources } from '../sources';
 import { flagColors, flagLabels, font, radius, useTheme, type FlagColor } from '../theme';
-import { useUploads, type PickedFile, type UploadSummary } from '../useUploads';
-import { ActionSheet, BottomSheet, ConfirmSheet, FlagSheet, PromptSheet, type SheetAction } from '../components/Sheets';
-import PreviewModal, { openWithApp, shareEntry } from '../components/PreviewModal';
+import { useUploadQueue } from '../uploads';
+import type { PickedFile } from '../useUploads';
+import { ActionSheet, ConfirmSheet, FlagSheet, PromptSheet, type SheetAction } from '../components/Sheets';
+import PreviewModal, { openItem, shareItem } from '../components/PreviewModal';
+import { FailedSheet, UploadPanel } from '../components/UploadPanel';
 import { Screen } from '../components/Screen';
-import { Bar, Button, Hatch, IconButton, Input, Segmented, Txt } from '../components/ui';
+import { sourceKindLabel } from '../components/SourceIcon';
+import { Button, Hatch, IconButton, Input, Segmented, Txt } from '../components/ui';
 
 export type ViewMode = 'list' | 'grid';
 type Filter = 'all' | 'image' | 'video' | 'document';
-type Clipboard = { mode: 'copy' | 'move'; paths: string[]; from: string };
 
 const GRID_COLS = 3;
 const GRID_GAP = 10;
@@ -88,39 +74,40 @@ const baseName = (p: string) => decodeURIComponent(p.split('/').pop() || `file-$
 const tap = () => Haptics.selectionAsync().catch(() => {});
 
 export default function BrowserScreen({
-  session,
-  view,
-  showHidden,
-  onChangeView,
-  onLogout,
+  provider,
+  onExit,
   onOpenMenu,
+  onOpenAnalytics,
 }: {
-  session: Session;
-  view: ViewMode;
-  showHidden: boolean;
-  onChangeView: (v: ViewMode) => void;
-  onLogout: () => void;
+  provider: StorageProvider;
+  onExit: () => void;
   onOpenMenu: () => void;
+  onOpenAnalytics: () => void;
 }) {
   const t = useTheme();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
+  const { prefs, setPrefs, clipboard, setClipboard, provider: providerById, sources } = useSources();
+  const uploads = useUploadQueue();
+  const view = prefs.view;
 
-  const [path, setPath] = useState('/');
-  const [entries, setEntries] = useState<Entry[]>([]);
+  const [stack, setStack] = useState<FolderRef[]>([provider.root]);
+  const folder = stack[stack.length - 1];
+  const caps = provider.caps(folder.id);
+  const [entries, setEntries] = useState<FileItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ message: string; auth?: boolean } | null>(null);
   const [filter, setFilter] = useState<Filter>('all');
   const [flagFilter, setFlagFilter] = useState<FlagColor | null>(null);
   const [search, setSearch] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string> | null>(null);
-  const [clipboard, setClipboard] = useState<Clipboard | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
-  const [preview, setPreview] = useState<Entry | null>(null);
+  const [preview, setPreview] = useState<FileItem | null>(null);
+  const [showFailed, setShowFailed] = useState(false);
   const [sheet, setSheet] = useState<{ title?: string; actions: SheetAction[] } | null>(null);
-  const [flagTarget, setFlagTarget] = useState<string[] | null>(null);
+  const [flagTarget, setFlagTarget] = useState<FileItem[] | null>(null);
   const [confirm, setConfirm] = useState<{ title: string; message: string; run: () => void } | null>(null);
   const [prompt, setPrompt] = useState<{
     title: string;
@@ -130,58 +117,76 @@ export default function BrowserScreen({
     run: (v: string) => Promise<unknown>;
   } | null>(null);
 
-  const pathRef = useRef(path);
+  const folderRef = useRef(folder.id);
   useEffect(() => {
-    pathRef.current = path;
-  }, [path]);
+    folderRef.current = folder.id;
+  }, [folder.id]);
 
   // Ambil isi folder; hasil diabaikan jika user sudah pindah folder.
   const fetchDir = useCallback(
-    (p: string) =>
-      listDir(session, p, showHidden)
-        .then((res) => {
-          if (pathRef.current !== p) return;
-          setEntries(res.entries);
+    (id: string) =>
+      provider
+        .list(id, { hidden: prefs.showHidden })
+        .then((items) => {
+          if (folderRef.current !== id) return;
+          setEntries(items);
           setError(null);
         })
         .catch((e: any) => {
-          if (e instanceof ApiError && e.status === 401) return onLogout();
-          setError(e?.message ?? 'Gagal memuat');
+          if (folderRef.current !== id) return;
+          const auth = e instanceof AuthExpiredError || (e instanceof ApiError && e.status === 401);
+          setError({
+            message: auth
+              ? `Akses ke ${provider.label} sudah tidak berlaku. Hubungkan ulang lewat Beranda → Tambah sumber → ${sourceKindLabel[provider.kind]} (dengan akun/server yang sama).`
+              : (e?.message ?? 'Gagal memuat'),
+            auth,
+          });
         })
         .finally(() => setLoading(false)),
-    [session, onLogout, showHidden],
+    [provider, prefs.showHidden],
   );
 
   useEffect(() => {
-    fetchDir(path);
-  }, [path, fetchDir]);
+    fetchDir(folder.id);
+  }, [folder.id, fetchDir]);
 
-  const load = (p: string) => {
+  // Refresh otomatis jika upload ke folder ini selesai.
+  useEffect(() => {
+    if (uploads.lastDone?.sourceId === provider.id && uploads.lastDone.dir === folderRef.current) fetchDir(folderRef.current);
+  }, [uploads.lastDone, provider.id, fetchDir]);
+
+  const load = () => {
     setLoading(true);
-    fetchDir(p);
+    fetchDir(folder.id);
   };
 
-  const navigate = (p: string) => {
+  const resetView = () => {
     setSelected(null);
     setFlagFilter(null);
     setSearch(null);
     setLoading(true);
     setEntries([]);
-    setPath(p);
+  };
+  const openFolder = (f: FolderRef) => {
+    resetView();
+    setStack((s) => [...s, f]);
+  };
+  const goUp = () => {
+    if (stack.length === 1) return onExit();
+    resetView();
+    setStack((s) => s.slice(0, -1));
   };
 
-  // Tombol back Android: keluar mode pilih / pencarian, lalu naik satu folder.
+  // Tombol back Android: keluar mode pilih / pencarian, naik folder, lalu kembali ke Beranda.
   const backRef = useRef<() => boolean>(() => false);
   useEffect(() => {
     backRef.current = () => {
       if (selected) return setSelected(null), true;
       if (search !== null) return setSearch(null), true;
-      if (path === '/') return false;
-      navigate(parentPath(path));
+      goUp();
       return true;
     };
   });
-  // Hanya aktif saat layar ini fokus, agar tidak mencegat tombol back di layar lain.
   useFocusEffect(
     useCallback(() => {
       const sub = BackHandler.addEventListener('hardwareBackPress', () => backRef.current());
@@ -191,33 +196,21 @@ export default function BrowserScreen({
 
   useEffect(() => {
     if (!toast) return;
-    const id = setTimeout(() => setToast(null), 2600);
+    const id = setTimeout(() => setToast(null), 2800);
     return () => clearTimeout(id);
   }, [toast]);
 
-  const onUploadDone = useCallback(
-    (destDir: string) => {
-      if (destDir === pathRef.current) fetchDir(destDir);
-    },
-    [fetchDir],
-  );
-  const [showFailed, setShowFailed] = useState(false);
-  const onUploadsSettled = useCallback((sum: UploadSummary) => {
-    // Kegagalan ditampilkan lewat kartu peringatan di panel upload.
-    if (sum.failed.length) {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
-    } else if (sum.done || sum.skipped) {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-    }
-  }, []);
-  const uploads = useUploads(session, onUploadDone, onUploadsSettled);
   const activeUploads = uploads.items.filter((i) => i.status === 'uploading' || i.status === 'queued' || i.status === 'retrying').length;
+  const target = provider.uploader
+    ? { sourceId: provider.id, adapter: provider.uploader, dir: folder.id, label: `${provider.label} / ${folder.name}` }
+    : null;
 
   // ---------- data turunan ----------
 
   const visible = useMemo(() => {
     const q = search?.trim().toLowerCase();
     return entries.filter((e) => {
+      if (e.action) return !q && filter === 'all' && !flagFilter;
       if (q && !e.name.toLowerCase().includes(q)) return false;
       if (flagFilter && e.flag !== flagFilter) return false;
       if (filter !== 'all' && (e.isDir || categoryOf(e) !== (filter as Category))) return false;
@@ -231,11 +224,9 @@ export default function BrowserScreen({
     return m;
   }, [entries]);
 
-  const selectedEntries = useMemo(
-    () => (selected ? entries.filter((e) => selected.has(e.path)) : []),
-    [entries, selected],
-  );
-  const allSelected = !!selected && visible.length > 0 && visible.every((e) => selected.has(e.path));
+  const selectable = visible.filter((e) => !e.action);
+  const selectedItems = useMemo(() => (selected ? entries.filter((e) => selected.has(e.path)) : []), [entries, selected]);
+  const allSelected = !!selected && selectable.length > 0 && selectable.every((e) => selected.has(e.path));
 
   // ---------- aksi ----------
 
@@ -248,11 +239,12 @@ export default function BrowserScreen({
       setToast(e?.message ?? String(e));
     } finally {
       setBusy(null);
-      load(pathRef.current);
+      fetchDir(folderRef.current);
     }
   };
 
-  const toggleSelect = (e: Entry) => {
+  const toggleSelect = (e: FileItem) => {
+    if (e.action) return;
     tap();
     setSelected((prev) => {
       const next = new Set(prev ?? []);
@@ -262,51 +254,85 @@ export default function BrowserScreen({
     });
   };
 
-  const startSelect = (e?: Entry) => {
+  const startSelect = (e?: FileItem) => {
+    if (e?.action) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
     setSelected(new Set(e ? [e.path] : []));
   };
 
   const toggleSelectAll = () => {
     tap();
-    setSelected(allSelected ? new Set() : new Set(visible.map((e) => e.path)));
+    setSelected(allSelected ? new Set() : new Set(selectable.map((e) => e.path)));
   };
 
-  const toClipboard = (mode: Clipboard['mode'], paths: string[]) => {
-    setClipboard({ mode, paths, from: path });
+  const toClipboard = (mode: 'copy' | 'move', items: FileItem[]) => {
+    setClipboard({ mode, sourceId: provider.id, fromFolder: folder.id, items });
     setSelected(null);
-    setToast(`${paths.length} item siap ${mode === 'copy' ? 'disalin' : 'dipindah'}. Buka folder tujuan lalu tempel.`);
+    setToast(`${items.length} item siap ${mode === 'copy' ? 'disalin' : 'dipindah'}. Buka folder tujuan (sumber mana pun) lalu Tempel.`);
   };
+
+  const clipSource = clipboard ? (clipboard.sourceId === provider.id ? provider : providerById(clipboard.sourceId)) : null;
+  const sameSource = clipboard?.sourceId === provider.id;
+  const canPaste =
+    !!clipboard &&
+    !!clipSource &&
+    (sameSource ? caps.copyMove && !(clipboard.mode === 'move' && clipboard.fromFolder === folder.id) : caps.upload && !!target);
 
   const paste = () => {
-    if (!clipboard) return;
-    const { mode, paths } = clipboard;
+    if (!clipboard || !clipSource) return;
+    const { mode, items } = clipboard;
     setClipboard(null);
-    run(
-      'paste',
-      () => (mode === 'copy' ? copyItems(session, paths, path) : moveItems(session, paths, path)),
-      `${paths.length} item ${mode === 'copy' ? 'disalin' : 'dipindah'} ke ${path === '/' ? 'Storage' : baseName(path)}`,
+    if (sameSource) {
+      return run(
+        'paste',
+        () => (mode === 'copy' ? provider.copy(items, folder.id) : provider.move(items, folder.id)),
+        `${items.length} item ${mode === 'copy' ? 'disalin' : 'dipindah'} ke ${folder.name}`,
+      );
+    }
+    // Antar sumber: unduh dari sumber asal lalu upload ke sini lewat antrian upload (tahan gangguan).
+    const files = items.filter((i) => !i.isDir && !i.cloudDoc);
+    const skipped = items.length - files.length;
+    const picked: PickedFile[] = files.map((item) => ({
+      name: item.name,
+      size: item.size >= 0 ? item.size : undefined,
+      prepare: async () => {
+        const f = await clipSource.download(item);
+        return { uri: f.uri, size: f.size };
+      },
+      after: mode === 'move' ? () => clipSource.remove([item]) : undefined,
+    }));
+    if (picked.length && target) uploads.enqueue(picked, target);
+    setToast(
+      `${picked.length} file masuk antrian ${mode === 'copy' ? 'salin' : 'pindah'} dari ${clipSource.label}` +
+        (skipped ? ` · ${skipped} folder/dokumen Google dilewati (belum didukung antar sumber)` : ''),
     );
   };
 
-  const askDelete = (paths: string[]) =>
+  const askDelete = (items: FileItem[]) =>
     setConfirm({
-      title: `Hapus ${paths.length} item?`,
-      message: 'File dan folder (beserta isinya) akan dihapus permanen dari server. Tidak bisa dibatalkan.',
+      title: `Hapus ${items.length} item?`,
+      message:
+        provider.kind === 'gdrive'
+          ? 'Item dipindahkan ke Sampah Google Drive (masih bisa dipulihkan dari Google Drive).'
+          : provider.kind === 'device'
+            ? 'Item dihapus dari HP ini. Tidak bisa dibatalkan.'
+            : 'File dan folder (beserta isinya) akan dihapus permanen. Tidak bisa dibatalkan.',
       run: () => {
         setSelected(null);
-        run('delete', () => deleteItems(session, paths), `${paths.length} item dihapus`);
+        run('delete', () => provider.remove(items), `${items.length} item dihapus`);
       },
     });
 
   const applyFlag = (color: FlagColor | null) => {
-    const paths = flagTarget ?? [];
+    const items = flagTarget ?? [];
     setFlagTarget(null);
     setSelected(null);
-    run('flag', () => setFlag(session, paths, color), color ? `Flag ${flagLabels[color].toLowerCase()} dipasang` : 'Flag dihapus');
+    if (!provider.setFlag) return;
+    run('flag', () => provider.setFlag!(items, color), color ? `Flag ${flagLabels[color].toLowerCase()} dipasang` : 'Flag dihapus');
   };
 
   const pickMedia = async (fromCamera: boolean) => {
+    if (!target) return;
     const perm = fromCamera
       ? await ImagePicker.requestCameraPermissionsAsync()
       : await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -321,118 +347,104 @@ export default function BrowserScreen({
       ? await ImagePicker.launchCameraAsync(opts)
       : await ImagePicker.launchImageLibraryAsync({ ...opts, allowsMultipleSelection: true, selectionLimit: 0 });
     if (res.canceled) return;
-    const files: PickedFile[] = res.assets.map((a) => ({
-      uri: a.uri,
-      name: a.fileName || baseName(a.uri),
-      mimeType: a.mimeType,
-      size: a.fileSize,
-    }));
-    uploads.enqueue(files, path);
+    uploads.enqueue(
+      res.assets.map((a) => ({ uri: a.uri, name: a.fileName || baseName(a.uri), mimeType: a.mimeType, size: a.fileSize })),
+      target,
+    );
   };
 
   const pickDocuments = async () => {
+    if (!target) return;
     const res = await DocumentPicker.getDocumentAsync({ multiple: true, copyToCacheDirectory: true });
     if (res.canceled) return;
     uploads.enqueue(
       res.assets.map((a) => ({ uri: a.uri, name: a.name, mimeType: a.mimeType, size: a.size })),
-      path,
+      target,
     );
   };
 
   const newFolder = () =>
     setPrompt({
       title: 'Folder baru',
-      description: `Dibuat di ${path === '/' ? 'Storage' : path}`,
+      description: `Dibuat di ${folder.name}`,
       confirm: 'Buat',
-      run: (name) => mkdir(session, joinPath(path, name)),
+      run: (name) => provider.mkdir(folder.id, name),
     });
 
   const openAddMenu = () =>
     setSheet({
-      title: `Tambah ke ${path === '/' ? 'Storage' : baseName(path)}`,
+      title: `Tambah ke ${folder.name}`,
       actions: [
-        { label: 'Foto & Video', description: 'Pilih banyak sekaligus, kualitas asli', icon: Images, onPress: () => pickMedia(false) },
-        { label: 'Kamera', description: 'Ambil foto atau video lalu upload', icon: Camera, onPress: () => pickMedia(true) },
-        { label: 'File', description: 'Dokumen, arsip, atau file apa pun', icon: FileUp, onPress: pickDocuments },
-        { label: 'Folder baru', description: 'Buat folder di lokasi ini', icon: FolderPlus, onPress: newFolder },
+        ...(caps.upload
+          ? [
+              { label: 'Foto & Video', description: 'Pilih banyak sekaligus, kualitas asli', icon: Images, onPress: () => pickMedia(false) },
+              { label: 'Kamera', description: 'Ambil foto atau video lalu simpan di sini', icon: Camera, onPress: () => pickMedia(true) },
+              { label: 'File', description: 'Dokumen, arsip, atau file apa pun', icon: FileUp, onPress: pickDocuments },
+            ]
+          : []),
+        ...(caps.write ? [{ label: 'Folder baru', description: 'Buat folder di lokasi ini', icon: FolderPlus, onPress: newFolder }] : []),
       ],
     });
 
-  const openEntryMenu = (e: Entry) => {
+  const openEntryMenu = (e: FileItem) => {
+    if (e.action) return;
     const kind = previewKind(e);
+    const external = e.cloudDoc || kind === 'office' || kind === 'other';
     setSheet({
       title: e.name,
       actions: [
         ...(!e.isDir
           ? [
-              ...(kind === 'office' || kind === 'other'
-                ? [{ label: kind === 'office' ? 'Buka di Google Drive' : 'Buka dengan…', icon: ExternalLink, onPress: () => run('open', () => openWithApp(session, e)) }]
+              ...(external
+                ? [{ label: kind === 'office' || e.cloudDoc ? 'Buka di Google Drive' : 'Buka dengan…', icon: ExternalLink, onPress: () => run('open', () => openItem(provider, e)) }]
                 : []),
-              { label: 'Bagikan / Simpan', icon: Share2, onPress: () => run('share', () => shareEntry(session, e)) },
+              ...(!e.cloudDoc ? [{ label: 'Bagikan / Simpan', icon: Share2, onPress: () => run('share', () => shareItem(provider, e)) }] : []),
+              { label: 'Salin', description: 'Tempel di folder atau sumber lain', icon: Copy, onPress: () => toClipboard('copy', [e]) },
             ]
           : []),
-        { label: 'Salin', icon: Copy, onPress: () => toClipboard('copy', [e.path]) },
-        { label: 'Pindah', icon: FolderInput, onPress: () => toClipboard('move', [e.path]) },
-        { label: 'Beri flag', icon: Flag, onPress: () => setFlagTarget([e.path]) },
-        {
-          label: 'Ganti nama',
-          icon: Pencil,
-          onPress: () =>
-            setPrompt({
-              title: 'Ganti nama',
-              initial: e.name,
-              confirm: 'Simpan',
-              run: (name) => rename(session, e.path, joinPath(parentPath(e.path), name)),
-            }),
-        },
-        { label: 'Hapus', icon: Trash2, destructive: true, onPress: () => askDelete([e.path]) },
+        ...(caps.copyMove || caps.remove ? [{ label: 'Pindah', icon: FolderInput, onPress: () => toClipboard('move', [e]) }] : []),
+        ...(caps.flags ? [{ label: 'Beri flag', icon: Flag, onPress: () => setFlagTarget([e]) }] : []),
+        ...(caps.write
+          ? [
+              {
+                label: 'Ganti nama',
+                icon: Pencil,
+                onPress: () =>
+                  setPrompt({ title: 'Ganti nama', initial: e.name, confirm: 'Simpan', run: (name) => provider.rename(e, name) }),
+              },
+            ]
+          : []),
+        ...(caps.remove ? [{ label: 'Hapus', icon: Trash2, destructive: true, onPress: () => askDelete([e]) }] : []),
       ],
     });
   };
 
-  const onItemPress = (e: Entry) => {
+  const onItemPress = (e: FileItem) => {
+    if (e.action) return void run('action', () => provider.runAction!(e.action!));
     if (selected) return toggleSelect(e);
-    if (e.isDir) return navigate(e.path);
+    if (e.isDir) return openFolder({ id: e.path, name: e.name });
     setPreview(e);
   };
-  const onItemLongPress = (e: Entry) => (selected ? toggleSelect(e) : startSelect(e));
+  const onItemLongPress = (e: FileItem) => (selected ? toggleSelect(e) : startSelect(e));
 
   // ---------- render ----------
 
   const tileSize = (width - PAD * 2 - 16 - GRID_GAP * (GRID_COLS - 1)) / GRID_COLS;
-  const folderName = path === '/' ? 'Storage' : baseName(path);
-  const parentName = path === '/' ? null : parentPath(path) === '/' ? 'Storage' : baseName(parentPath(path));
+  const atRoot = stack.length === 1;
+  const parentName = atRoot ? 'Beranda' : stack[stack.length - 2].name;
+  const canAdd = caps.upload || caps.write;
 
-  const renderItem = ({ item }: { item: Entry }) => {
+  const renderItem = ({ item }: { item: FileItem }) => {
     const isSel = !!selected?.has(item.path);
-    return view === 'grid' ? (
-      <GridItem
-        entry={item}
-        session={session}
-        size={tileSize}
-        selecting={!!selected}
-        selected={isSel}
-        onPress={onItemPress}
-        onLongPress={onItemLongPress}
-      />
-    ) : (
-      <ListItem
-        entry={item}
-        session={session}
-        selecting={!!selected}
-        selected={isSel}
-        onPress={onItemPress}
-        onLongPress={onItemLongPress}
-        onMore={openEntryMenu}
-      />
-    );
+    const props = { entry: item, provider, selecting: !!selected, selected: isSel, onPress: onItemPress, onLongPress: onItemLongPress };
+    return view === 'grid' ? <GridItem {...props} size={tileSize} /> : <ListItem {...props} onMore={openEntryMenu} />;
   };
 
   const toolbar =
     search !== null ? (
       <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
         <View style={{ flex: 1 }}>
-          <Input icon={Search} autoFocus placeholder={`Cari di ${folderName}`} value={search} onChangeText={setSearch} />
+          <Input icon={Search} autoFocus placeholder={`Cari di ${folder.name}`} value={search} onChangeText={setSearch} />
         </View>
         <IconButton icon={X} variant="dark" onPress={() => setSearch(null)} accessibilityLabel="Tutup pencarian" />
       </View>
@@ -444,22 +456,25 @@ export default function BrowserScreen({
       </>
     );
 
+  const multipleSources = sources.length > 1;
+
   return (
     <Screen
-      title={path === '/' ? 'Halo!' : folderName}
-      subtitle={path === '/' ? 'Kelola file di homelab kamu:' : `~${path}`}
+      title={atRoot ? provider.label : folder.name}
+      subtitle={atRoot ? provider.subtitle : stack.map((f) => f.name).join(' / ')}
       badge={activeUploads}
+      onBack={goUp}
       onMenu={onOpenMenu}
       toolbar={toolbar}
     >
-      {/* Strip navigasi (seperti strip tanggal di referensi) */}
+      {/* Strip navigasi */}
       <View style={styles.strip}>
         {selected ? (
           <>
             <IconButton icon={X} size={36} onPress={() => setSelected(null)} accessibilityLabel="Keluar mode pilih" />
             <View style={styles.stripCenter}>
               <Txt variant="heading">{selected.size} dipilih</Txt>
-              <Txt variant="caption">{folderName}</Txt>
+              <Txt variant="caption">{folder.name}</Txt>
             </View>
             <Pressable onPress={toggleSelectAll} hitSlop={8} style={[styles.pill, { backgroundColor: t.card }]}>
               <Txt variant="label">{allSelected ? 'Batal semua' : 'Pilih semua'}</Txt>
@@ -467,30 +482,26 @@ export default function BrowserScreen({
           </>
         ) : (
           <>
-            {parentName && (
-              <IconButton
-                icon={ChevronLeft}
-                size={36}
-                onPress={() => navigate(parentPath(path))}
-                accessibilityLabel="Kembali ke folder induk"
-              />
-            )}
+            <IconButton icon={ChevronLeft} size={36} onPress={goUp} accessibilityLabel="Kembali ke folder induk" />
             <View style={{ flex: 1 }}>
               <Txt variant="caption" numberOfLines={1}>
-                {parentName ? `${parentName} /` : 'Lokasi'}
+                {parentName} /
               </Txt>
               <Txt variant="heading" numberOfLines={1}>
-                {visible.length} item{visible.length !== entries.length ? ` dari ${entries.length}` : ''}
+                {selectable.length} item{selectable.length !== entries.filter((e) => !e.action).length ? ` dari ${entries.filter((e) => !e.action).length}` : ''}
               </Txt>
             </View>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              {provider.features.analytics && (
+                <IconButton icon={ChartPie} size={36} onPress={onOpenAnalytics} accessibilityLabel="Analitik storage" />
+              )}
               <Pressable onPress={() => startSelect()} hitSlop={8} style={[styles.pill, { backgroundColor: t.card }]}>
                 <Txt variant="label">Pilih</Txt>
               </Pressable>
               <IconButton
                 icon={view === 'list' ? LayoutGrid : List}
                 size={36}
-                onPress={() => onChangeView(view === 'list' ? 'grid' : 'list')}
+                onPress={() => setPrefs({ view: view === 'list' ? 'grid' : 'list' })}
                 accessibilityLabel="Ganti tampilan"
               />
             </View>
@@ -511,9 +522,9 @@ export default function BrowserScreen({
         {error ? (
           <View style={styles.centerBox}>
             <Txt variant="muted" style={{ color: t.danger, marginBottom: 14, textAlign: 'center' }}>
-              {error}
+              {error.message}
             </Txt>
-            <Button label="Coba lagi" size="sm" onPress={() => load(path)} />
+            <Button label={error.auth ? 'Ke Beranda' : 'Coba lagi'} size="sm" onPress={error.auth ? onExit : load} />
           </View>
         ) : (
           <FlatList
@@ -525,13 +536,13 @@ export default function BrowserScreen({
             extraData={selected}
             columnWrapperStyle={view === 'grid' ? { gap: GRID_GAP } : undefined}
             ItemSeparatorComponent={() => <View style={{ height: view === 'grid' ? 14 : 8 }} />}
-            refreshControl={<RefreshControl refreshing={false} onRefresh={() => load(path)} tintColor={t.mutedText} />}
+            refreshControl={<RefreshControl refreshing={false} onRefresh={load} tintColor={t.mutedText} />}
             contentContainerStyle={{ padding: 8, paddingBottom: 170 + insets.bottom }}
             ListEmptyComponent={
               loading ? (
                 <ActivityIndicator style={{ marginTop: 40 }} color={t.mutedText} />
               ) : (
-                <EmptyState filtered={visible.length !== entries.length} onAdd={openAddMenu} />
+                <EmptyState filtered={visible.length !== entries.length} onAdd={canAdd ? openAddMenu : undefined} />
               )
             }
           />
@@ -547,42 +558,44 @@ export default function BrowserScreen({
             </Txt>
           </View>
         )}
-        <UploadPanel uploads={uploads} onShowFailed={() => setShowFailed(true)} />
+        <UploadPanel onShowFailed={() => setShowFailed(true)} />
 
         {selected ? (
           <View style={[styles.actionBar, { backgroundColor: t.bg }]}>
-            <ActionBtn icon={Copy} label="Salin" disabled={!selected.size} onPress={() => toClipboard('copy', [...selected])} />
-            <ActionBtn icon={FolderInput} label="Pindah" disabled={!selected.size} onPress={() => toClipboard('move', [...selected])} />
-            <ActionBtn icon={Flag} label="Flag" disabled={!selected.size} onPress={() => setFlagTarget([...selected])} />
+            <ActionBtn
+              icon={Copy}
+              label="Salin"
+              disabled={!selectedItems.some((i) => !i.isDir) && !caps.copyMove}
+              onPress={() => toClipboard('copy', selectedItems)}
+            />
+            <ActionBtn icon={FolderInput} label="Pindah" disabled={!selected.size || !(caps.copyMove || caps.remove)} onPress={() => toClipboard('move', selectedItems)} />
+            {caps.flags && <ActionBtn icon={Flag} label="Flag" disabled={!selected.size} onPress={() => setFlagTarget(selectedItems)} />}
             <ActionBtn
               icon={Share2}
               label="Bagikan"
-              disabled={selectedEntries.length !== 1 || selectedEntries[0].isDir}
-              onPress={() => run('share', () => shareEntry(session, selectedEntries[0]))}
+              disabled={selectedItems.length !== 1 || selectedItems[0].isDir}
+              onPress={() => run('share', () => shareItem(provider, selectedItems[0]))}
             />
-            <ActionBtn icon={Trash2} label="Hapus" danger disabled={!selected.size} onPress={() => askDelete([...selected])} />
+            <ActionBtn icon={Trash2} label="Hapus" danger disabled={!selected.size || !caps.remove} onPress={() => askDelete(selectedItems)} />
           </View>
         ) : clipboard ? (
           <View style={[styles.clipBar, { backgroundColor: t.bg }]}>
             <View style={{ flex: 1 }}>
               <Txt variant="label" dark>
-                {clipboard.paths.length} item {clipboard.mode === 'copy' ? 'disalin' : 'akan dipindah'}
+                {clipboard.items.length} item {clipboard.mode === 'copy' ? 'disalin' : 'akan dipindah'}
               </Txt>
               <Txt variant="small" dark numberOfLines={1}>
-                Buka folder tujuan, lalu tempel
+                {canPaste
+                  ? multipleSources && !sameSource
+                    ? `Dari ${clipSource?.label ?? 'sumber lain'} → ${provider.label}`
+                    : 'Buka folder tujuan, lalu tempel'
+                  : 'Tidak bisa ditempel di folder ini'}
               </Txt>
             </View>
             <IconButton icon={X} variant="dark" size={38} onPress={() => setClipboard(null)} accessibilityLabel="Batal" />
-            <Button
-              label="Tempel"
-              icon={ClipboardPaste}
-              size="sm"
-              loading={busy === 'paste'}
-              disabled={clipboard.mode === 'move' && clipboard.from === path}
-              onPress={paste}
-            />
+            <Button label="Tempel" icon={ClipboardPaste} size="sm" loading={busy === 'paste'} disabled={!canPaste} onPress={paste} />
           </View>
-        ) : (
+        ) : canAdd ? (
           <View style={{ alignSelf: 'flex-end' }}>
             <Pressable
               onPress={openAddMenu}
@@ -592,7 +605,7 @@ export default function BrowserScreen({
               <Plus size={28} color={t.primaryText} strokeWidth={2.4} />
             </Pressable>
           </View>
-        )}
+        ) : null}
       </View>
 
       {busy && busy !== 'paste' && (
@@ -606,7 +619,7 @@ export default function BrowserScreen({
         visible={!!flagTarget}
         count={flagTarget?.length ?? 0}
         current={(() => {
-          const fl = entries.filter((e) => flagTarget?.includes(e.path)).map((e) => e.flag ?? null);
+          const fl = (flagTarget ?? []).map((e) => e.flag ?? null);
           return fl.length && fl.every((f) => f === fl[0]) ? fl[0] : null;
         })()}
         onPick={applyFlag}
@@ -635,12 +648,8 @@ export default function BrowserScreen({
           run('prompt', () => fn(v));
         }}
       />
-      <FailedSheet
-        visible={showFailed}
-        uploads={uploads}
-        onClose={() => setShowFailed(false)}
-      />
-      <PreviewModal session={session} entry={preview} onClose={() => setPreview(null)} />
+      <FailedSheet visible={showFailed} onClose={() => setShowFailed(false)} />
+      <PreviewModal provider={provider} entry={preview} onClose={() => setPreview(null)} />
     </Screen>
   );
 }
@@ -648,20 +657,41 @@ export default function BrowserScreen({
 // ---------- item ----------
 
 type ItemProps = {
-  entry: Entry;
-  session: Session;
+  entry: FileItem;
+  provider: StorageProvider;
   selecting: boolean;
   selected: boolean;
-  onPress: (e: Entry) => void;
-  onLongPress: (e: Entry) => void;
+  onPress: (e: FileItem) => void;
+  onLongPress: (e: FileItem) => void;
 };
 
-function Thumb({ entry, session, size, rounded }: { entry: Entry; session: Session; size: number; rounded: number }) {
+/** Thumbnail dari provider (bisa async, mis. galeri HP / Google Drive). */
+function useThumb(provider: StorageProvider, entry: FileItem): MediaSource | null {
+  const sync = useMemo(() => {
+    if (entry.isDir || entry.action) return null;
+    if (!entry.thumb && previewKind(entry) !== 'image' && !entry.path.startsWith('asset:')) return null;
+    return provider.thumbnail(entry);
+  }, [provider, entry]);
+  const [resolved, setResolved] = useState<{ path: string; src: MediaSource | null } | null>(null);
+  useEffect(() => {
+    if (!(sync instanceof Promise)) return;
+    let alive = true;
+    sync.then((src) => alive && setResolved({ path: entry.path, src })).catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [sync, entry.path]);
+  if (sync instanceof Promise) return resolved?.path === entry.path ? resolved.src : null;
+  return sync;
+}
+
+function Thumb({ entry, provider, size, rounded }: { entry: FileItem; provider: StorageProvider; size: number; rounded: number }) {
   const t = useTheme();
-  if (previewKind(entry) === 'image') {
+  const src = useThumb(provider, entry);
+  if (src) {
     return (
       <Image
-        source={{ uri: fileUrl(session, entry.path) }}
+        source={src}
         style={{ width: size, height: size, borderRadius: rounded, backgroundColor: t.panel }}
         contentFit="cover"
         cachePolicy="disk"
@@ -671,26 +701,30 @@ function Thumb({ entry, session, size, rounded }: { entry: Entry; session: Sessi
     );
   }
   const folder = entry.isDir;
+  const action = !!entry.action;
   return (
     <View
       style={{
         width: size,
         height: size,
         borderRadius: rounded,
-        backgroundColor: folder ? t.primary : t.bg,
+        backgroundColor: action ? t.card : folder ? t.primary : t.bg,
+        borderWidth: action ? 2 : 0,
+        borderStyle: 'dashed',
+        borderColor: t.stripe,
         alignItems: 'center',
         justifyContent: 'center',
         gap: 2,
       }}
     >
-      {createElement(iconFor(entry), {
-        size: size * (folder ? 0.42 : 0.36),
-        color: folder ? t.primaryText : t.textOnDark,
+      {createElement(action ? Plus : iconFor(entry), {
+        size: size * (folder || action ? 0.42 : 0.36),
+        color: action ? t.mutedText : folder ? t.primaryText : t.textOnDark,
         strokeWidth: 1.9,
       })}
-      {!folder && (
+      {!folder && !action && (
         <Text style={{ color: t.mutedOnDark, fontFamily: font.bold, fontSize: Math.max(8, size * 0.15) }} numberOfLines={1}>
-          {extLabel(entry)}
+          {entry.cloudDoc ? 'GOOGLE' : extLabel(entry)}
         </Text>
       )}
     </View>
@@ -711,15 +745,21 @@ function SelectMark({ selected }: { selected: boolean }) {
   );
 }
 
+function metaLine(e: FileItem) {
+  if (e.action) return 'Pilih folder di HP untuk ditampilkan di sini';
+  if (e.isDir) return e.count != null ? `${e.count} item` : e.size < 0 ? 'Folder' : `Folder · ${formatDate(e.modTime)}`;
+  return `${e.cloudDoc ? 'Dokumen Google' : extLabel(e)}${e.size >= 0 ? ` · ${formatSize(e.size)}` : ''} · ${formatDate(e.modTime)}`;
+}
+
 const ListItem = memo(function ListItem({
   entry,
-  session,
+  provider,
   selecting,
   selected,
   onPress,
   onLongPress,
   onMore,
-}: ItemProps & { onMore: (e: Entry) => void }) {
+}: ItemProps & { onMore: (e: FileItem) => void }) {
   const t = useTheme();
   return (
     <Pressable
@@ -731,7 +771,7 @@ const ListItem = memo(function ListItem({
         { backgroundColor: selected ? '#fdebdc' : t.card, borderColor: selected ? t.primary : 'transparent', opacity: pressed ? 0.85 : 1 },
       ]}
     >
-      <Thumb entry={entry} session={session} size={50} rounded={16} />
+      <Thumb entry={entry} provider={provider} size={50} rounded={16} />
       <View style={{ flex: 1 }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
           {entry.flag && <View style={[styles.flagDot, { backgroundColor: flagColors[entry.flag] }]} />}
@@ -740,10 +780,10 @@ const ListItem = memo(function ListItem({
           </Txt>
         </View>
         <Txt variant="small" numberOfLines={1} style={{ marginTop: 3 }}>
-          {entry.isDir ? 'Folder' : `${extLabel(entry)} · ${formatBytes(entry.size)}`} · {formatDate(entry.modTime)}
+          {metaLine(entry)}
         </Txt>
       </View>
-      {selecting ? (
+      {entry.action ? null : selecting ? (
         <SelectMark selected={selected} />
       ) : entry.isDir ? (
         <ChevronRight size={20} color={t.mutedText} strokeWidth={2.2} />
@@ -754,7 +794,7 @@ const ListItem = memo(function ListItem({
   );
 });
 
-const GridItem = memo(function GridItem({ entry, session, size, selecting, selected, onPress, onLongPress }: ItemProps & { size: number }) {
+const GridItem = memo(function GridItem({ entry, provider, size, selecting, selected, onPress, onLongPress }: ItemProps & { size: number }) {
   const t = useTheme();
   return (
     <Pressable
@@ -763,10 +803,10 @@ const GridItem = memo(function GridItem({ entry, session, size, selecting, selec
       delayLongPress={350}
       style={({ pressed }) => [{ width: size, opacity: pressed ? 0.8 : 1 }]}
     >
-      <View style={{ borderRadius: 20, borderWidth: 2.5, borderColor: selected ? t.primary : 'transparent', padding: 0 }}>
-        <Thumb entry={entry} session={session} size={size - 5} rounded={17} />
+      <View style={{ borderRadius: 20, borderWidth: 2.5, borderColor: selected ? t.primary : 'transparent' }}>
+        <Thumb entry={entry} provider={provider} size={size - 5} rounded={17} />
         {entry.flag && <View style={[styles.flagCorner, { backgroundColor: flagColors[entry.flag], borderColor: t.panel }]} />}
-        {selecting && (
+        {selecting && !entry.action && (
           <View style={{ position: 'absolute', top: 6, right: 6 }}>
             <SelectMark selected={selected} />
           </View>
@@ -776,7 +816,7 @@ const GridItem = memo(function GridItem({ entry, session, size, selecting, selec
         {entry.name}
       </Txt>
       <Txt variant="small" numberOfLines={1} style={{ fontSize: 11, paddingHorizontal: 2 }}>
-        {entry.isDir ? 'Folder' : formatBytes(entry.size)}
+        {entry.isDir ? 'Folder' : entry.size >= 0 ? formatSize(entry.size) : formatDate(entry.modTime)}
       </Txt>
     </Pressable>
   );
@@ -798,7 +838,7 @@ function FlagChip({ color, label, active, onPress }: { color?: FlagColor; label:
   );
 }
 
-function EmptyState({ filtered, onAdd }: { filtered: boolean; onAdd: () => void }) {
+function EmptyState({ filtered, onAdd }: { filtered: boolean; onAdd?: () => void }) {
   const t = useTheme();
   return (
     <View style={{ gap: 8 }}>
@@ -807,7 +847,7 @@ function EmptyState({ filtered, onAdd }: { filtered: boolean; onAdd: () => void 
           {i === 1 && <Txt variant="small">{filtered ? 'Tidak ada yang cocok' : 'Folder kosong'}</Txt>}
         </Hatch>
       ))}
-      {!filtered && <Button label="Upload file" icon={Plus} size="sm" onPress={onAdd} style={{ alignSelf: 'center', marginTop: 10 }} />}
+      {!filtered && onAdd && <Button label="Tambah file" icon={Plus} size="sm" onPress={onAdd} style={{ alignSelf: 'center', marginTop: 10 }} />}
     </View>
   );
 }
@@ -832,163 +872,6 @@ function ActionBtn({
       <I size={21} color={color} strokeWidth={2} />
       <Text style={{ color, fontFamily: font.semibold, fontSize: 11 }}>{label}</Text>
     </Pressable>
-  );
-}
-
-function UploadPanel({ uploads, onShowFailed }: { uploads: ReturnType<typeof useUploads>; onShowFailed: () => void }) {
-  const t = useTheme();
-  const { items, summary, running, cancelAll, retryFailed, clearFinished } = uploads;
-  if (items.length === 0) return null;
-
-  const finished = (s: string) => s === 'done' || s === 'skipped';
-  const sent = items.reduce((acc, i) => acc + (finished(i.status) ? i.size : i.sent), 0);
-  const total = items.reduce((acc, i) => acc + i.size, 0);
-  const handled = summary.done + summary.skipped + summary.failed.length + summary.cancelled;
-  const current = items.find((i) => i.status === 'uploading') ?? items.find((i) => i.status === 'retrying');
-  const retrying = items.find((i) => i.status === 'retrying');
-  const failed = summary.failed.length;
-
-  // Selesai, ada yang gagal → kartu peringatan.
-  if (!running && failed) {
-    return (
-      <View style={[styles.upload, { backgroundColor: '#f8e4b4' }]}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-          <View style={[styles.uploadIcon, { backgroundColor: '#b7791f' }]}>
-            <TriangleAlert size={20} color="#fff" />
-          </View>
-          <View style={{ flex: 1 }}>
-            <Txt variant="label">{failed} file gagal diupload</Txt>
-            <Txt variant="small" style={{ marginTop: 2, color: '#6b5420' }} numberOfLines={2}>
-              {summary.done} berhasil{summary.skipped ? ` · ${summary.skipped} dilewati (sudah ada)` : ''} · {summary.failed[0].error}
-            </Txt>
-          </View>
-          <IconButton icon={X} variant="plain" size={32} color="#6b5420" onPress={clearFinished} accessibilityLabel="Tutup" />
-        </View>
-        <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
-          <Button label="Lihat alasan" size="sm" variant="light" onPress={onShowFailed} style={{ flex: 1 }} />
-          <Button label="Coba lagi" icon={RotateCcw} size="sm" onPress={retryFailed} style={{ flex: 1 }} />
-        </View>
-      </View>
-    );
-  }
-
-  return (
-    <View style={[styles.upload, { backgroundColor: t.card }]}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-        <View style={[styles.uploadIcon, { backgroundColor: running ? t.primary : t.success }]}>
-          {running ? <CloudUpload size={20} color={t.primaryText} /> : <Check size={20} color="#fff" strokeWidth={2.6} />}
-        </View>
-        <View style={{ flex: 1 }}>
-          <Txt variant="label">
-            {running
-              ? `Mengupload ${Math.min(handled + 1, items.length)} dari ${items.length}`
-              : `Upload selesai · ${summary.done} file`}
-          </Txt>
-          <Txt variant="small" numberOfLines={1} style={{ marginTop: 2 }}>
-            {running
-              ? current
-                ? `${current.name} · ${formatBytes(current.sent)} / ${formatBytes(current.size)}`
-                : 'Menyiapkan…'
-              : summary.skipped
-                ? `${summary.skipped} dilewati karena sudah ada di server`
-                : `${formatBytes(total)} terkirim`}
-          </Txt>
-        </View>
-        <IconButton
-          icon={X}
-          variant="plain"
-          size={32}
-          color={t.mutedText}
-          onPress={running ? cancelAll : clearFinished}
-          accessibilityLabel={running ? 'Batalkan semua upload' : 'Tutup'}
-        />
-      </View>
-
-      {retrying && (
-        <View style={[styles.retryRow, { backgroundColor: '#f8e4b4' }]}>
-          <RotateCcw size={14} color="#8a5a12" />
-          <Txt variant="small" numberOfLines={2} style={{ flex: 1, color: '#6b5420' }}>
-            {retrying.name}: mencoba ulang {retrying.attempt}/5 · {retrying.error}
-          </Txt>
-        </View>
-      )}
-
-      {running && (
-        <>
-          <View style={{ marginTop: 12 }}>
-            <Bar value={total ? sent / total : 0} />
-          </View>
-          <View style={{ flexDirection: 'row', marginTop: 6, gap: 10 }}>
-            <Txt variant="small" style={{ flex: 1, fontSize: 11 }}>
-              {formatBytes(sent)} / {formatBytes(total)} · {total ? Math.floor((sent / total) * 100) : 0}%
-            </Txt>
-            {summary.skipped > 0 && <Txt variant="small" style={{ fontSize: 11 }}>{summary.skipped} dilewati</Txt>}
-            {failed > 0 && (
-              <Pressable onPress={onShowFailed} hitSlop={8}>
-                <Txt variant="small" style={{ fontSize: 11, color: t.danger }}>
-                  {failed} gagal ›
-                </Txt>
-              </Pressable>
-            )}
-          </View>
-        </>
-      )}
-    </View>
-  );
-}
-
-/** Daftar file yang gagal beserta alasannya. */
-function FailedSheet({
-  visible,
-  uploads,
-  onClose,
-}: {
-  visible: boolean;
-  uploads: ReturnType<typeof useUploads>;
-  onClose: () => void;
-}) {
-  const t = useTheme();
-  const failed = uploads.summary.failed;
-  return (
-    <BottomSheet visible={visible} onClose={onClose}>
-      <View style={{ paddingHorizontal: 24 }}>
-        <Txt variant="title">{failed.length} file gagal diupload</Txt>
-        <Txt variant="muted" style={{ marginTop: 4, lineHeight: 20 }}>
-          File lain tetap dilanjutkan. Coba lagi akan melanjutkan dari bagian yang sudah terkirim.
-        </Txt>
-      </View>
-      <ScrollView style={{ maxHeight: 340, marginTop: 14 }} contentContainerStyle={{ paddingHorizontal: 16 }}>
-        {failed.map((f) => (
-          <View key={f.id} style={[styles.failRow, { backgroundColor: t.panel }]}>
-            <TriangleAlert size={18} color={t.danger} />
-            <View style={{ flex: 1 }}>
-              <Txt variant="label" numberOfLines={1}>
-                {f.name}
-              </Txt>
-              <Txt variant="small" style={{ marginTop: 2 }}>
-                {f.error || 'Gagal tanpa keterangan'}
-              </Txt>
-              <Txt variant="small" style={{ marginTop: 2, fontSize: 11 }}>
-                {formatBytes(f.sent)} / {formatBytes(f.size)} terkirim · ke {f.destDir}
-              </Txt>
-            </View>
-          </View>
-        ))}
-      </ScrollView>
-      <View style={{ flexDirection: 'row', gap: 10, paddingHorizontal: 20, marginTop: 14 }}>
-        <Button label="Tutup" variant="outline" onPress={onClose} style={{ flex: 1 }} />
-        <Button
-          label="Coba lagi"
-          icon={RotateCcw}
-          disabled={!failed.length}
-          onPress={() => {
-            uploads.retryFailed();
-            onClose();
-          }}
-          style={{ flex: 1.3 }}
-        />
-      </View>
-    </BottomSheet>
   );
 }
 
@@ -1021,9 +904,5 @@ const styles = StyleSheet.create({
   actionBar: { flexDirection: 'row', borderRadius: radius.xl, paddingVertical: 10, paddingHorizontal: 6 },
   actionBtn: { flex: 1, alignItems: 'center', gap: 4, paddingVertical: 4 },
   clipBar: { flexDirection: 'row', alignItems: 'center', gap: 10, borderRadius: radius.xl, padding: 12, paddingLeft: 18 },
-  upload: { borderRadius: radius.xl, padding: 14 },
-  uploadIcon: { width: 40, height: 40, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
-  retryRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10, padding: 8, borderRadius: 12 },
-  failRow: { flexDirection: 'row', gap: 12, padding: 12, borderRadius: 16, marginBottom: 8 },
   busy: { alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(43,43,39,0.15)' },
 });

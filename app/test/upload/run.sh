@@ -21,9 +21,18 @@ SERVER_PID=$!
 for _ in $(seq 1 50); do curl -fs "http://127.0.0.1:$PORT/api/health" >/dev/null && break; sleep 0.1; done
 
 cd "$HERE"
+ALIASES=(--alias:expo-file-system=./mocks/expo-file-system.ts --alias:expo-keep-awake=./mocks/expo-keep-awake.ts
+  --alias:react-native=./mocks/react-native.ts --alias:expo-secure-store=./mocks/expo-secure-store.ts
+  --alias:expo-web-browser=./mocks/expo-web-browser.ts --alias:expo-auth-session=./mocks/expo-auth-session.ts)
 npx esbuild run.tsx --bundle --platform=node --format=esm --outfile="$WORK/run.mjs" --jsx=automatic \
-  --alias:expo-file-system=./mocks/expo-file-system.ts --alias:expo-keep-awake=./mocks/expo-keep-awake.ts \
-  --alias:react-native=./mocks/react-native.ts --external:jsdom --banner:js="$(cat banner.js)" --log-level=warning
+  "${ALIASES[@]}" --external:jsdom --banner:js="$(cat banner.js)" --log-level=warning
 cp "$WORK/run.mjs" "$HERE/.run.mjs"   # dijalankan dari folder app agar jsdom ter-resolve
-trap '[ -n "${SERVER_PID:-}" ] && kill "$SERVER_PID" 2>/dev/null; rm -rf "$WORK" "$HERE/.run.mjs"' EXIT
+trap '[ -n "${SERVER_PID:-}" ] && kill "$SERVER_PID" 2>/dev/null; rm -rf "$WORK" "$HERE/.run.mjs" "$HERE/.cloud.mjs"' EXIT
+echo "== CasaOS (server Go asli)"
 API="http://127.0.0.1:$PORT" DATA="$WORK/data" SRC="$WORK/src" CACHE="$WORK/cache" node "$HERE/.run.mjs"
+
+echo "== Google Drive & Dropbox (server tiruan sesuai protokol)"
+mk besar-drive.bin 41943040; mk besar-dbx.bin 41943040; mk dari-casaos.mov 3145728; mk "Liburan – café ☕.jpg" 2097152
+npx esbuild cloud.tsx --bundle --platform=node --format=esm --outfile="$HERE/.cloud.mjs" --jsx=automatic \
+  "${ALIASES[@]}" --external:jsdom --banner:js="$(cat cloud-banner.js)" --log-level=warning
+SRC="$WORK/src" CACHE="$WORK/cache" node "$HERE/.cloud.mjs"

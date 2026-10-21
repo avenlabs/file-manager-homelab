@@ -2,11 +2,12 @@ import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { RefreshCw } from 'lucide-react-native';
-import { formatBytes, formatDate, formatDuration, getStats, type Entry, type Session, type Stats } from '../api';
+import { formatBytes, formatDate, formatDuration, getStats, type Entry, type Stats } from '../api';
 import { categoryColors, categoryLabels, iconFor, type Category } from '../fileTypes';
 import { flagColors, font, radius, useTheme } from '../theme';
 import { Screen } from '../components/Screen';
 import PreviewModal from '../components/PreviewModal';
+import type { CasaOSProvider } from '../providers/casaos';
 import { Bar, Button, Hatch, IconTile, Segmented, Txt } from '../components/ui';
 
 type Tab = 'summary' | 'files';
@@ -21,7 +22,8 @@ function timeAgo(iso: string) {
   return `${Math.floor(s / 3600)} jam lalu`;
 }
 
-export default function AnalyticsScreen({ session, onBack }: { session: Session; onBack: () => void }) {
+export default function AnalyticsScreen({ provider, onBack }: { provider: CasaOSProvider; onBack: () => void }) {
+  const session = provider.session;
   const t = useTheme();
   const insets = useSafeAreaInsets();
   const [tab, setTab] = useState<Tab>('summary');
@@ -123,7 +125,7 @@ export default function AnalyticsScreen({ session, onBack }: { session: Session;
           </View>
         </ScrollView>
       )}
-      <PreviewModal session={session} entry={preview} onClose={() => setPreview(null)} />
+      <PreviewModal provider={provider} entry={preview} onClose={() => setPreview(null)} />
     </Screen>
   );
 }

@@ -288,3 +288,6 @@ export function formatDuration(seconds: number): string {
 export function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' });
 }
+
+/** Ukuran untuk tampilan; ukuran tidak diketahui (mis. foto di galeri HP) ditulis "—". */
+export const formatSize = (n: number) => (n < 0 ? '—' : formatBytes(n));

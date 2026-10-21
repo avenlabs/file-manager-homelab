@@ -1,19 +1,13 @@
 import { useRouter } from 'expo-router';
-import BrowserScreen from '../screens/BrowserScreen';
-import { useAuthedSession, useSession } from '../session';
+import HomeScreen from '../screens/HomeScreen';
 
-export default function FilesRoute() {
+export default function HomeRoute() {
   const router = useRouter();
-  const session = useAuthedSession();
-  const { prefs, setPrefs, signOut } = useSession();
   return (
-    <BrowserScreen
-      session={session}
-      view={prefs.view}
-      showHidden={prefs.showHidden}
-      onChangeView={(view) => setPrefs({ view })}
-      onLogout={signOut}
+    <HomeScreen
+      onOpenSource={(id) => router.push({ pathname: '/source/[id]', params: { id } })}
       onOpenMenu={() => router.push('/settings')}
+      onConnectCasaOS={() => router.push('/connect/casaos')}
     />
   );
 }

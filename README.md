@@ -1,17 +1,54 @@
 # Casa Files
 
-File manager mobile (iPhone & Android) untuk upload, melihat, dan mengelola foto/video/file di storage homelab CasaOS.
+File manager mobile (iPhone & Android) untuk semua penyimpanan kamu: **file di HP**, **server CasaOS
+di homelab**, **Google Drive**, dan **Dropbox** — dalam satu app.
 
 ![Screenshot](docs/screenshots/overview.png)
 
+## Satu app, sesuai kebutuhan
+
+Tidak ada login wajib. App langsung terbuka ke **Beranda** berisi sumber penyimpanan; "HP ini" selalu ada,
+sisanya ditambahkan lewat **+ Tambah sumber** dan bisa diputus kapan saja (Pengaturan).
+
+| Pengguna | Yang ditambahkan | Butuh server? |
+|---|---|---|
+| Hanya baca file di HP | (tidak ada — langsung pakai "HP ini") | Tidak |
+| Pakai Google Drive / Dropbox | Google Drive dan/atau Dropbox | Tidak |
+| Punya homelab CasaOS | Server CasaOS (+ cloud jika mau) | Ya, `casa-files-server` |
+
+Semua sumber memakai tampilan & fitur yang sama (list/grid, filter, cari, pilih semua, preview).
+**Salin/pindah antar sumber** memakai clipboard yang sama: salin dari Google Drive → buka folder
+CasaOS → Tempel. File diunduh lalu di-upload lewat antrian upload yang tahan gangguan.
+
+| Sumber | Baca | Upload | Salin/pindah | Flag | Analitik | Catatan |
+|---|---|---|---|---|---|---|
+| HP ini | ✓ | ✓ (ke folder / Galeri) | ✓ | – | – | Galeri + folder yang dipilih (lihat batasan) |
+| Server CasaOS | ✓ | ✓ resumable | ✓ | ✓ | ✓ | Butuh `casa-files-server` |
+| Google Drive | ✓ | ✓ resumable | ✓ | – | – | Hapus = masuk Sampah Drive; Docs/Sheets dibuka di app Google |
+| Dropbox | ✓ | ✓ resumable | ✓ | – | – | |
+| MEGA | – | – | – | – | – | Belum tersedia (lihat di bawah) |
+
+Setup Google Drive & Dropbox (client ID / app key saat build): **[docs/cloud-setup.md](docs/cloud-setup.md)**.
+
+**Batasan "HP ini".** iOS dan Android modern tidak mengizinkan app membaca *seluruh* penyimpanan HP.
+App menampilkan Galeri (foto & video), folder "Casa Files" milik app, dan folder yang kamu pilih lewat
+"Tambah folder dari HP…" (Android: akses folder via Storage Access Framework; iOS: folder dari app Files,
+aksesnya hanya selama app terbuka).
+
+**Kenapa MEGA belum ada.** MEGA tidak menyediakan OAuth; app harus menyimpan email & password MEGA dan
+melakukan dekripsi end-to-end di HP (JavaScript), yang lambat untuk file besar. Direncanakan setelah
+fitur lain stabil.
+
 ```
-┌──────────────┐   HTTP/HTTPS (LAN / Tailscale)   ┌──────────── CasaOS ────────────┐
-│  App Expo    │ ───────────────────────────────▶ │ casa-files-server (Docker, Go) │
-│ iOS/Android  │   REST + token                   │   /data  ⇢  disk 1.5TB         │
-└──────────────┘                                  └────────────────────────────────┘
+┌──────────────┐  HTTP/HTTPS (LAN / Tailscale)   ┌──────────── CasaOS ────────────┐
+│              │ ──────────────────────────────▶ │ casa-files-server (Go)         │
+│  App Expo    │                                 │   /data  ⇢  disk 1.5TB         │
+│ iOS/Android  │  OAuth + REST API resmi         └────────────────────────────────┘
+│              │ ──────────────────────────────▶  Google Drive · Dropbox
+└──────────────┘  (Galeri & folder lokal)        HP ini
 ```
 
-### Cara kerja koneksi
+### Cara kerja koneksi (Server CasaOS)
 
 App **tidak** login ke dashboard CasaOS. CasaOS tidak menyediakan API resmi untuk aplikasi pihak ketiga,
 jadi repo ini menyertakan server kecil sendiri (`casa-files-server`) yang dipasang di mesin CasaOS dan
@@ -167,9 +204,16 @@ Lalu scan QR code yang muncul:
 
 Di layar login isi alamat server, mis. `192.168.1.10:8088`, dan `APP_PASSWORD` dari file `.env`.
 
-Cek kode: `npm run typecheck`, `npm run lint`, dan `npm run test:upload` (tes ketahanan upload dengan server Go asli; butuh Go).
+Cek kode: `npm run typecheck`, `npm run lint`, dan `npm run test:upload` (tes ketahanan upload: CasaOS dengan server Go asli, Google Drive & Dropbox dengan server tiruan sesuai protokol; butuh Go).
 
-Navigasi memakai Expo Router (`app/src/app/`): `index` (file), `analytics`, `settings`, `login`.
+Navigasi memakai Expo Router (`app/src/app/`): `index` (Beranda/sumber), `source/[id]` (file manager),
+`connect/casaos`, `analytics/[id]`, `settings`.
+
+Arsitektur sumber (`app/src/providers/`): setiap sumber mengimplementasikan `StorageProvider`
+(`list`, `source`, `download`, `mkdir`, `rename`, `remove`, `copy`, `move`, `uploader`), sehingga layar
+file manager, preview, clipboard, dan mesin upload (`useUploads`) dipakai bersama. Upload ke setiap sumber
+memakai protokol resumable-nya sendiri lewat `UploadAdapter` (CasaOS: `/api/uploads`, Drive: resumable
+session, Dropbox: upload session).
 
 ---
 

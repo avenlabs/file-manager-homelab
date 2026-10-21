@@ -122,3 +122,17 @@ export const categoryColors: Record<Category, string> = {
   archive: '#6250d6',
   other: '#9a9a8a',
 };
+
+const extMime: Record<string, string> = {
+  jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp',
+  heic: 'image/heic', heif: 'image/heif', bmp: 'image/bmp', svg: 'image/svg+xml', avif: 'image/avif',
+  mp4: 'video/mp4', mov: 'video/quicktime', m4v: 'video/x-m4v', mkv: 'video/x-matroska', webm: 'video/webm',
+  '3gp': 'video/3gpp', avi: 'video/x-msvideo', mp3: 'audio/mpeg', m4a: 'audio/mp4', aac: 'audio/aac',
+  wav: 'audio/wav', flac: 'audio/flac', ogg: 'audio/ogg', opus: 'audio/opus', pdf: 'application/pdf',
+  txt: 'text/plain', md: 'text/markdown', csv: 'text/csv', json: 'application/json', zip: 'application/zip',
+};
+
+/** Tebak MIME dari ekstensi nama file (untuk sumber yang tidak menyediakan MIME). */
+export function mimeFromName(name: string): string | undefined {
+  return extMime[extOf(name)];
+}

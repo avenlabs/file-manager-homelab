@@ -9,12 +9,13 @@ import {
   PlusJakartaSans_700Bold,
   PlusJakartaSans_800ExtraBold,
 } from '@expo-google-fonts/plus-jakarta-sans';
-import { SessionProvider, useSession } from '../session';
+import { SourcesProvider, useSources } from '../sources';
+import { UploadsProvider } from '../uploads';
 import { useTheme } from '../theme';
 
 function RootStack() {
   const t = useTheme();
-  const { ready, session } = useSession();
+  const { ready } = useSources();
   const [fontsLoaded] = useFonts({
     PlusJakartaSans_400Regular,
     PlusJakartaSans_500Medium,
@@ -33,16 +34,13 @@ function RootStack() {
 
   return (
     <>
-      <StatusBar style={session ? 'light' : 'dark'} />
+      <StatusBar style="light" />
       <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: t.bg } }}>
-        <Stack.Protected guard={!!session}>
-          <Stack.Screen name="index" />
-          <Stack.Screen name="analytics" />
-          <Stack.Screen name="settings" options={{ animation: 'slide_from_bottom' }} />
-        </Stack.Protected>
-        <Stack.Protected guard={!session}>
-          <Stack.Screen name="login" />
-        </Stack.Protected>
+        <Stack.Screen name="index" />
+        <Stack.Screen name="source/[id]" />
+        <Stack.Screen name="connect/casaos" />
+        <Stack.Screen name="analytics/[id]" />
+        <Stack.Screen name="settings" options={{ animation: 'slide_from_bottom' }} />
       </Stack>
     </>
   );
@@ -50,8 +48,10 @@ function RootStack() {
 
 export default function RootLayout() {
   return (
-    <SessionProvider>
-      <RootStack />
-    </SessionProvider>
+    <SourcesProvider>
+      <UploadsProvider>
+        <RootStack />
+      </UploadsProvider>
+    </SourcesProvider>
   );
 }

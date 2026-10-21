@@ -2,16 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Platform } from 'react-native';
 import { Directory, File, Paths, type UploadTask } from 'expo-file-system';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
-import {
-  abortUpload,
-  completeUpload,
-  createChunkTask,
-  initUpload,
-  networkReason,
-  UploadError,
-  uploadErrorFrom,
-  type Session,
-} from './api';
+import { networkReason, UploadError } from './api';
+import type { UploadAdapter } from './providers/types';
 
 export type UploadStatus = 'queued' | 'uploading' | 'retrying' | 'done' | 'skipped' | 'error' | 'cancelled';
 
@@ -19,6 +11,8 @@ export type UploadItem = {
   id: string;
   name: string;
   destDir: string;
+  /** Nama tujuan untuk ditampilkan, mis. "Google Drive / Foto". */
+  destLabel: string;
   size: number;
   sent: number;
   status: UploadStatus;
@@ -27,7 +21,21 @@ export type UploadItem = {
   attempt?: number;
 };
 
-export type PickedFile = { uri: string; name: string; mimeType?: string; size?: number; modTime?: number };
+export type PickedFile = {
+  /** URI lokal. Boleh kosong jika `prepare` dipakai. */
+  uri?: string;
+  name: string;
+  mimeType?: string;
+  size?: number;
+  modTime?: number;
+  /** Ambil file ke lokal dulu (mis. unduh dari sumber lain saat salin antar sumber). */
+  prepare?: () => Promise<{ uri: string; size?: number }>;
+  /** Dijalankan setelah sukses (mis. hapus file asal saat "pindah" antar sumber). */
+  after?: () => Promise<void>;
+};
+
+/** Tujuan upload: adapter milik sumber + folder tujuan di sumber itu. */
+export type UploadTarget = { sourceId: string; adapter: UploadAdapter; dir: string; label: string };
 
 export type UploadSummary = { total: number; done: number; skipped: number; failed: UploadItem[]; cancelled: number };
 
@@ -46,7 +54,9 @@ const RUNNING: UploadStatus[] = ['queued', 'uploading', 'retrying'];
 type Job = {
   id: string;
   file: PickedFile;
-  destDir: string;
+  target: UploadTarget;
+  /** URI lokal hasil `prepare` (file sementara, dihapus setelah selesai). */
+  prepared?: { uri: string; size?: number };
   cancelled: boolean;
   task?: UploadTask;
   sessionId?: string;
@@ -65,6 +75,15 @@ function summarize(items: UploadItem[]): UploadSummary {
   };
 }
 
+/** Hapus file sementara hasil `prepare` (hanya yang ada di folder cache). */
+function cleanup(job: Job) {
+  if (!job.prepared) return;
+  try {
+    const f = new File(job.prepared.uri);
+    if (f.exists && f.uri.includes('/cache')) f.delete();
+  } catch {}
+}
+
 const chunkDir = () => {
   const dir = new Directory(Paths.cache, 'upload-chunks');
   dir.create({ idempotent: true, intermediates: true });
@@ -79,8 +98,7 @@ const chunkDir = () => {
  * - File yang sudah ada di server (nama & ukuran sama) dilewati, jadi aman memilih ulang file yang sama.
  */
 export function useUploads(
-  session: Session,
-  onFileDone: (destDir: string) => void,
+  onFileDone?: (target: UploadTarget) => void,
   onSettled?: (summary: UploadSummary) => void,
 ) {
   const [items, setItems] = useState<UploadItem[]>([]);
@@ -143,10 +161,17 @@ export function useUploads(
 
       let lastProgress = Date.now();
       let stalled = false;
-      const task = createChunkTask(session, id, offset, src, (sent) => {
-        lastProgress = Date.now();
-        patch(job.id, { sent: offset + Math.min(sent, len), status: 'uploading', error: undefined });
-      });
+      let created: Awaited<ReturnType<UploadAdapter['chunk']>>;
+      try {
+        created = await job.target.adapter.chunk(id, offset, len, size, src, (sent) => {
+          lastProgress = Date.now();
+          patch(job.id, { sent: offset + Math.min(sent, len), status: 'uploading', error: undefined });
+        });
+      } catch (e) {
+        if (tmp?.exists) tmp.delete();
+        throw e instanceof UploadError ? e : new UploadError(networkReason(e));
+      }
+      const { task, parse } = created;
       job.task = task;
       const watchdog = setInterval(() => {
         if (Date.now() - lastProgress > STALL_MS) {
@@ -156,13 +181,7 @@ export function useUploads(
       }, 3_000);
 
       try {
-        const res = await task.uploadAsync();
-        let body: any = null;
-        try {
-          body = JSON.parse(res.body);
-        } catch {}
-        if (res.status === 200 || res.status === 409) return Number(body?.offset ?? offset);
-        throw uploadErrorFrom(res.status, body);
+        return parse(await task.uploadAsync());
       } catch (e) {
         if (job.cancelled) throw new CancelledError();
         if (stalled) throw new UploadError(`Koneksi macet, tidak ada progres selama ${STALL_MS / 1000} detik`);
@@ -175,45 +194,76 @@ export function useUploads(
         if (tmp?.exists) tmp.delete();
       }
     },
-    [session, patch],
+    [patch],
   );
 
   /** Upload satu file sampai selesai, dilewati, atau gagal permanen. */
   const runJob = useCallback(
     async (job: Job): Promise<'done' | 'skipped'> => {
       if (Platform.OS === 'web') throw new UploadError('Upload hanya tersedia di app iPhone / Android', true);
+      const { adapter, dir } = job.target;
+
+      // Salin antar sumber: ambil file dari sumber asal ke lokal dulu (dengan retry).
+      if (job.file.prepare && !job.prepared) {
+        for (let attempt = 1; ; attempt++) {
+          if (job.cancelled) throw new CancelledError();
+          try {
+            job.prepared = await job.file.prepare();
+            break;
+          } catch (e: any) {
+            const msg = `Gagal mengambil file dari sumber asal: ${e?.message ?? 'tanpa keterangan'}`;
+            if (attempt > MAX_RETRIES) throw new UploadError(`${msg} — sudah dicoba ${MAX_RETRIES}x`, true);
+            patch(job.id, { status: 'retrying', error: msg, attempt });
+            await sleep(job, BACKOFF_MS[attempt - 1]);
+          }
+        }
+      }
+      const uri = job.prepared?.uri ?? job.file.uri;
+      if (!uri) throw new UploadError('File tidak punya lokasi lokal', true);
+
       let local: File;
       let size: number;
       try {
-        local = new File(job.file.uri);
+        local = new File(uri);
         if (!local.exists) throw new UploadError('File di HP tidak ditemukan (mungkin sudah dihapus atau dipindah)', true);
-        size = job.file.size || local.size;
+        size = job.prepared?.size || job.file.size || local.size;
       } catch (e) {
         if (e instanceof UploadError) throw e;
         throw new UploadError(`File di HP tidak bisa dibaca (${(e as any)?.message ?? 'tanpa keterangan'})`, true);
       }
       patch(job.id, { size, status: 'uploading' });
 
+      // Tujuan lokal (HP ini): salin langsung tanpa jaringan.
+      if (adapter.direct) {
+        try {
+          const r = await adapter.direct(uri, dir, job.file.name, size);
+          patch(job.id, { sent: size });
+          return r;
+        } catch (e: any) {
+          throw new UploadError(`Gagal menyimpan di HP: ${e?.message ?? 'tanpa keterangan'}`, true);
+        }
+      }
+
       let failures = 0;
       for (;;) {
         if (job.cancelled) throw new CancelledError();
         try {
-          const init = await initUpload(session, job.destDir, job.file.name, size, job.file.modTime);
+          const init = await adapter.init(dir, job.file.name, size, job.file.modTime);
           if (init.status === 'exists') {
             patch(job.id, { sent: size });
             return 'skipped';
           }
-          job.sessionId = init.id;
+          job.sessionId = init.session;
           let offset = init.offset;
           patch(job.id, { sent: offset });
           while (offset < size) {
             if (job.cancelled) throw new CancelledError();
-            const next = await sendChunk(job, local, init.id, offset, size);
+            const next = await sendChunk(job, local, init.session, offset, size);
             if (next <= offset) throw new UploadError('Server tidak menerima data potongan');
             failures = 0; // ada kemajuan → reset hitungan gagal
             offset = next;
           }
-          if ((await completeUpload(session, init.id)) === 'done') return 'done';
+          if ((await adapter.complete(init.session, size)) === 'done') return 'done';
           // 'retry': respons complete sebelumnya hilang / belum lengkap → init ulang (idempotent).
         } catch (e) {
           if (e instanceof CancelledError || job.cancelled) throw new CancelledError();
@@ -228,8 +278,10 @@ export function useUploads(
         }
       }
     },
-    [session, patch, sendChunk],
+    [patch, sendChunk],
   );
+
+
 
   const pump = useCallback(() => {
     while (active.current < CONCURRENCY && pending.current.length > 0) {
@@ -237,20 +289,32 @@ export function useUploads(
       if (job.cancelled) continue;
       active.current++;
       runJob(job)
-        .then((result) => {
+        .then(async (result) => {
+          if (job.file.after) {
+            try {
+              await job.file.after();
+            } catch (e: any) {
+              // File sudah tersalin; hanya penghapusan file asal yang gagal.
+              patch(job.id, { status: 'error', error: `Tersalin, tapi file asal gagal dihapus: ${e?.message ?? 'tanpa keterangan'}` });
+              return;
+            }
+          }
+          cleanup(job);
           patch(job.id, { status: result, error: undefined });
-          if (result === 'done') onFileDone(job.destDir);
+          if (result === 'done') onFileDone?.(job.target);
         })
         .catch((e) => {
           if (e instanceof CancelledError || job.cancelled) {
+            cleanup(job);
             patch(job.id, { status: 'cancelled', error: undefined });
-            if (job.sessionId) abortUpload(session, job.sessionId);
+            if (job.sessionId) job.target.adapter.abort?.(job.sessionId).catch(() => {});
           } else {
             const msg = String(e?.message ?? '').trim();
             patch(job.id, { status: 'error', error: msg || 'Gagal tanpa keterangan' });
           }
         })
         .finally(() => {
+          // File sementara dari `prepare` disimpan saat gagal agar "Coba lagi" tidak perlu unduh ulang.
           active.current--;
           pumpRef.current();
         });
@@ -260,25 +324,26 @@ export function useUploads(
       batchOpen.current = false;
       settledRef.current?.(summarize(itemsRef.current));
     }
-  }, [session, runJob, patch, onFileDone]);
+  }, [runJob, patch, onFileDone]);
 
   useEffect(() => {
     pumpRef.current = pump;
   }, [pump]);
 
   const enqueue = useCallback(
-    (files: PickedFile[], destDir: string) => {
+    (files: PickedFile[], target: UploadTarget) => {
       const now = Date.now();
       const newItems: UploadItem[] = files.map((file, i) => ({
         id: `${now}-${i}-${file.name}`,
         name: file.name,
-        destDir,
+        destDir: target.dir,
+        destLabel: target.label,
         size: file.size ?? 0,
         sent: 0,
         status: 'queued',
       }));
       newItems.forEach((it, i) => {
-        const job: Job = { id: it.id, file: files[i], destDir, cancelled: false };
+        const job: Job = { id: it.id, file: files[i], target, cancelled: false };
         jobs.current.set(it.id, job);
         pending.current.push(job);
       });
@@ -314,7 +379,7 @@ export function useUploads(
     for (const it of failed) {
       const old = jobs.current.get(it.id);
       if (!old) continue;
-      const job: Job = { id: it.id, file: old.file, destDir: old.destDir, cancelled: false };
+      const job: Job = { id: it.id, file: old.file, target: old.target, prepared: old.prepared, cancelled: false };
       jobs.current.set(it.id, job);
       pending.current.push(job);
     }

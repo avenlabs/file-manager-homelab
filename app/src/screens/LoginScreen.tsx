@@ -1,15 +1,16 @@
 import { useRef, useState } from 'react';
 import { KeyboardAvoidingView, Linking, Platform, ScrollView, StyleSheet, Text, View, type TextInputInstance } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { ArrowRight, CircleAlert, Lock, Server } from 'lucide-react-native';
+import { ArrowLeft, ArrowRight, CircleAlert, Lock, Server } from 'lucide-react-native';
 import { login, normalizeBaseUrl, type Session } from '../api';
 import { font, radius, useTheme } from '../theme';
-import { Button, Input, Txt } from '../components/ui';
+import { Button, IconButton, Input, Txt } from '../components/ui';
 import { HeroArt, LogoMark } from '../components/Logo';
 
 const GUIDE_URL = 'https://github.com/avenlabs/file-manager-homelab#1-jalankan-server-di-casaos';
 
-export default function LoginScreen({ onLogin }: { onLogin: (s: Session) => void }) {
+/** Hubungkan server CasaOS (casa-files-server) sebagai salah satu sumber. */
+export default function LoginScreen({ onLogin, onBack }: { onLogin: (s: Session) => void | Promise<unknown>; onBack?: () => void }) {
   const t = useTheme();
   const [url, setUrl] = useState('');
   const [password, setPassword] = useState('');
@@ -22,7 +23,7 @@ export default function LoginScreen({ onLogin }: { onLogin: (s: Session) => void
     setBusy(true);
     setError(null);
     try {
-      onLogin(await login(normalizeBaseUrl(url), password));
+      await onLogin(await login(normalizeBaseUrl(url), password));
     } catch (e: any) {
       setError(e?.message ?? 'Gagal terhubung');
     } finally {
@@ -38,6 +39,11 @@ export default function LoginScreen({ onLogin }: { onLogin: (s: Session) => void
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
         >
+          {onBack && (
+            <View style={{ position: 'absolute', left: 16, top: 8, zIndex: 1 }}>
+              <IconButton icon={ArrowLeft} variant="light" size={40} onPress={onBack} accessibilityLabel="Kembali" />
+            </View>
+          )}
           <View style={styles.brand}>
             <LogoMark size={34} color={t.text} starColor={t.sheet} />
             <Text style={[styles.wordmark, { color: t.text }]}>casa files</Text>
@@ -45,9 +51,9 @@ export default function LoginScreen({ onLogin }: { onLogin: (s: Session) => void
 
           <HeroArt height={150} />
 
-          <Text style={[styles.headline, { color: t.text }]}>Semua file homelab,{'\n'}di genggaman.</Text>
+          <Text style={[styles.headline, { color: t.text }]}>Hubungkan server{'\n'}CasaOS kamu.</Text>
           <Txt variant="muted" style={{ textAlign: 'center', lineHeight: 21, marginTop: 10 }}>
-            Upload foto & video langsung ke server CasaOS kamu.
+            Butuh casa-files-server terpasang di server homelab.
           </Txt>
 
           <View style={{ gap: 14, marginTop: 26 }}>

@@ -15,7 +15,7 @@ export class Directory {
   create() { fs.mkdirSync(this.path, { recursive: true }); }
 }
 
-export const Paths = { cache: new Directory((globalThis as any).__CACHE_DIR__) };
+export const Paths = { cache: new Directory((globalThis as any).__CACHE_DIR__ ?? '/tmp') };
 
 class Handle {
   fd: number; offset: number | null = 0;
@@ -73,7 +73,8 @@ export class UploadTask {
 
     return new Promise((resolve, reject) => {
       this.rejectFn = reject;
-      const u = new URL(this.url);
+      const rewrite = (globalThis as any).__REWRITE__ ?? ((x: string) => x);
+      const u = new URL(rewrite(this.url));
       const req = http.request(
         { hostname: u.hostname, port: u.port, path: u.pathname + u.search, method: this.opts.httpMethod,
           headers: { ...this.opts.headers, 'Content-Length': data.length } },

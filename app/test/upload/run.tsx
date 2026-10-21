@@ -4,6 +4,7 @@ import * as crypto from 'node:crypto';
 import { act, createElement, useEffect } from 'react';
 import { createRoot } from 'react-dom/client';
 import { useUploads, type PickedFile, type UploadSummary } from '../../src/useUploads';
+import { CasaOSProvider } from '../../src/providers/casaos';
 
 const { window } = new JSDOM('<div id="root"></div>');
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = false;
@@ -14,11 +15,13 @@ const DATA = process.env.DATA!;
 const SRC = process.env.SRC!;
 const token = (await (await fetch(API + '/api/login', { method: 'POST', body: JSON.stringify({ password: 'demo123' }) })).json()).token;
 const session = { baseUrl: API, token };
+const casa = new CasaOSProvider('casa', 'CasaOS', session);
+const target = { sourceId: 'casa', adapter: casa.uploader, dir: '/Upload', label: 'CasaOS / Upload' };
 
 let hook: ReturnType<typeof useUploads>;
 let settled: UploadSummary | null = null;
 function Probe() {
-  hook = useUploads(session, () => {}, (s) => (settled = s));
+  hook = useUploads(undefined, (s) => (settled = s));
   return null;
 }
 createRoot(window.document.getElementById('root')!).render(createElement(Probe));
@@ -30,7 +33,7 @@ const sha = (p: string) => crypto.createHash('sha256').update(fs.readFileSync(p)
 const t0 = performance.now();
 hook!.enqueue(
   [f('kecil.jpg'), f('besar.bin'), f('macet.bin'), f('rusak.bin'), f('putus.bin'), f('hilang.mov'), f('sudah-ada.jpg'), f('raksasa.bin', 2 ** 52), f('akhir.jpg')],
-  '/Upload',
+  target,
 );
 while (!settled) await new Promise((r) => setTimeout(r, 100));
 const secs = ((performance.now() - t0) / 1000).toFixed(1);
